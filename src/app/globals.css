@@ -1,26 +1,378 @@
 @import "tailwindcss";
+@plugin "tailwindcss-animate";
+
+/* ============================================================================
+   HRMS-NEW design tokens — Tailwind 4 CSS-first.
+   Neutral base + one accent (indigo). Semantic colour is reserved for status.
+   Chart palette is validated (see docs/DESIGN-SYSTEM.md) in BOTH modes:
+     light surface #ffffff · dark surface #18181b
+   ========================================================================== */
+
+@custom-variant dark (&:where(.dark, .dark *));
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  color-scheme: light;
+
+  /* surfaces & ink */
+  --background: #f7f7f8;
+  --foreground: #101014;
+  --card: #ffffff;
+  --card-foreground: #101014;
+  --popover: #ffffff;
+  --popover-foreground: #101014;
+  --muted: #f1f1f3;
+  --muted-foreground: #64646e;
+  --subtle: #fafafb;
+  --border: #e4e4e8;
+  --input: #e0e0e5;
+  --ring: #4f46e5;
+
+  /* accent */
+  --primary: #4f46e5;
+  --primary-foreground: #ffffff;
+  --primary-soft: #eef2ff;
+  --primary-soft-foreground: #3730a3;
+  --secondary: #f1f1f3;
+  --secondary-foreground: #101014;
+  --accent: #f1f1f3;
+  --accent-foreground: #101014;
+
+  /* semantic status — reserved, never decoration */
+  --success: #0ca30c;
+  --success-fg: #046104;
+  --success-soft: #e8f7e8;
+  --warning: #fab219;
+  --warning-fg: #8a5c00;
+  --warning-soft: #fdf4e0;
+  --serious: #ec835a;
+  --serious-fg: #9a4620;
+  --serious-soft: #fdeee7;
+  --destructive: #d03b3b;
+  --destructive-foreground: #ffffff;
+  --destructive-fg: #a02020;
+  --destructive-soft: #fceaea;
+  --info: #2a78d6;
+  --info-fg: #1c5cab;
+  --info-soft: #e8f1fd;
+  --neutral-soft: #f1f1f3;
+  --neutral-fg: #52525b;
+
+  /* ---- chart system ---------------------------------------------------- */
+  --chart-surface: #ffffff;
+  --chart-grid: #ececed;
+  --chart-axis: #c9c9cf;
+  --chart-ink: #101014;
+  --chart-ink-muted: #75757f;
+
+  /* categorical — fixed slot order, never cycled (validated adjacent-pair CVD) */
+  --series-1: #2a78d6; /* blue    */
+  --series-2: #eb6834; /* orange  */
+  --series-3: #1baf7a; /* aqua    */
+  --series-4: #eda100; /* yellow  */
+  --series-5: #e87ba4; /* magenta */
+  --series-6: #008300; /* green   */
+  --series-7: #4a3aa7; /* violet  */
+  --series-8: #e34948; /* red     */
+
+  /* sequential — one hue, light -> dark */
+  --seq-1: #cde2fb;
+  --seq-2: #9ec5f4;
+  --seq-3: #6da7ec;
+  --seq-4: #3987e5;
+  --seq-5: #2a78d6;
+  --seq-6: #1c5cab;
+  --seq-7: #104281;
+
+  /* ordinal — starts at seq step 250 so the lightest still clears 2:1 on white */
+  --ord-1: #86b6ef;
+  --ord-2: #5598e7;
+  --ord-3: #3987e5;
+  --ord-4: #2a78d6;
+  --ord-5: #256abf;
+  --ord-6: #1c5cab;
+
+  /* diverging — blue <-> red with a NEUTRAL GRAY midpoint */
+  --div-neg-3: #104281;
+  --div-neg-2: #2a78d6;
+  --div-neg-1: #9ec5f4;
+  --div-mid: #f0efec;
+  --div-pos-1: #f3b5b5;
+  --div-pos-2: #d03b3b;
+  --div-pos-3: #8f1f1f;
+
+  /* status colours used inside charts (distinct from series slots) */
+  --status-good: #0ca30c;
+  --status-warning: #fab219;
+  --status-serious: #ec835a;
+  --status-critical: #d03b3b;
+
+  --radius: 0.375rem;
+}
+
+.dark {
+  color-scheme: dark;
+
+  --background: #0d0d0f;
+  --foreground: #f4f4f5;
+  --card: #18181b;
+  --card-foreground: #f4f4f5;
+  --popover: #1c1c20;
+  --popover-foreground: #f4f4f5;
+  --muted: #232327;
+  --muted-foreground: #a1a1ab;
+  --subtle: #141417;
+  --border: #2a2a2f;
+  --input: #34343a;
+  --ring: #7c74f0;
+
+  --primary: #6366f1;
+  --primary-foreground: #ffffff;
+  --primary-soft: #232249;
+  --primary-soft-foreground: #c7c5fb;
+  --secondary: #232327;
+  --secondary-foreground: #f4f4f5;
+  --accent: #232327;
+  --accent-foreground: #f4f4f5;
+
+  --success: #0ca30c;
+  --success-fg: #4ade4a;
+  --success-soft: #112911;
+  --warning: #fab219;
+  --warning-fg: #fbbf3f;
+  --warning-soft: #2c2210;
+  --serious: #ec835a;
+  --serious-fg: #f0a081;
+  --serious-soft: #2d1d16;
+  --destructive: #d03b3b;
+  --destructive-foreground: #ffffff;
+  --destructive-fg: #f08282;
+  --destructive-soft: #2d1414;
+  --info: #3987e5;
+  --info-fg: #7fb4f0;
+  --info-soft: #12213a;
+  --neutral-soft: #26262b;
+  --neutral-fg: #b4b4bd;
+
+  /* ---- chart system (dark steps are SELECTED, not an auto-flip) --------- */
+  --chart-surface: #18181b;
+  --chart-grid: #29292e;
+  --chart-axis: #3d3d44;
+  --chart-ink: #f4f4f5;
+  --chart-ink-muted: #9a9aa4;
+
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+
+  --seq-1: #104281;
+  --seq-2: #1c5cab;
+  --seq-3: #256abf;
+  --seq-4: #2a78d6;
+  --seq-5: #3987e5;
+  --seq-6: #6da7ec;
+  --seq-7: #9ec5f4;
+
+  --ord-1: #184f95;
+  --ord-2: #1c5cab;
+  --ord-3: #256abf;
+  --ord-4: #2a78d6;
+  --ord-5: #3987e5;
+  --ord-6: #5598e7;
+
+  --div-neg-3: #9ec5f4;
+  --div-neg-2: #3987e5;
+  --div-neg-1: #1c5cab;
+  --div-mid: #383835;
+  --div-pos-1: #8f2c2c;
+  --div-pos-2: #d03b3b;
+  --div-pos-3: #f08282;
+
+  --status-good: #0ca30c;
+  --status-warning: #fab219;
+  --status-serious: #ec835a;
+  --status-critical: #d03b3b;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-subtle: var(--subtle);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-soft: var(--primary-soft);
+  --color-primary-soft-foreground: var(--primary-soft-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-success: var(--success);
+  --color-success-fg: var(--success-fg);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-fg: var(--warning-fg);
+  --color-warning-soft: var(--warning-soft);
+  --color-serious: var(--serious);
+  --color-serious-fg: var(--serious-fg);
+  --color-serious-soft: var(--serious-soft);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-destructive-fg: var(--destructive-fg);
+  --color-destructive-soft: var(--destructive-soft);
+  --color-info: var(--info);
+  --color-info-fg: var(--info-fg);
+  --color-info-soft: var(--info-soft);
+  --color-neutral-soft: var(--neutral-soft);
+  --color-neutral-fg: var(--neutral-fg);
+  --color-chart-surface: var(--chart-surface);
+  --color-chart-grid: var(--chart-grid);
+  --color-chart-axis: var(--chart-axis);
+  --color-chart-ink: var(--chart-ink);
+  --color-chart-ink-muted: var(--chart-ink-muted);
+
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", sans-serif;
+
+  /* 4 sizes only — enterprise density */
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1.05rem;
+  --text-sm: 0.8125rem;
+  --text-sm--line-height: 1.15rem;
+  --text-base: 0.9375rem;
+  --text-base--line-height: 1.4rem;
+  --text-lg: 1.125rem;
+  --text-lg--line-height: 1.6rem;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    line-height: var(--text-sm--line-height);
+    -webkit-font-smoothing: antialiased;
+  }
+  /* Tabular numerals on every figure column */
+  .tnum,
+  th[data-numeric],
+  td[data-numeric],
+  table [data-numeric] {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: var(--primary-soft);
+    color: var(--primary-soft-foreground);
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: var(--input) transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: var(--input);
+    border-radius: 99px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .skip-link {
+    position: absolute;
+    left: -9999px;
+    z-index: 999;
+  }
+  .skip-link:focus {
+    left: 0.5rem;
+    top: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  /* texture fill for the CVD / print / forced-colors case */
+  .viz-texture-45 {
+    background-image: repeating-linear-gradient(
+      45deg,
+      currentColor 0 1.5px,
+      transparent 1.5px 6px
+    );
+  }
+  .viz-texture-135 {
+    background-image: repeating-linear-gradient(
+      135deg,
+      currentColor 0 1.5px,
+      transparent 1.5px 6px
+    );
+  }
+}
+
+/* Recharts chrome — recessive grid & axes, never competing with the marks */
+.recharts-cartesian-axis-tick-value {
+  fill: var(--chart-ink-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.recharts-cartesian-grid line {
+  stroke: var(--chart-grid);
+}
+.recharts-cartesian-axis-line,
+.recharts-cartesian-axis-tick-line {
+  stroke: var(--chart-axis);
+}
+.recharts-surface:focus,
+.recharts-wrapper:focus {
+  outline: none;
+}
+.recharts-sector:focus,
+.recharts-rectangle:focus {
+  outline: 2px solid var(--ring);
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
