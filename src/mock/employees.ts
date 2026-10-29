@@ -1,5 +1,5 @@
 import { addDays, differenceInMonths, format, parseISO } from "date-fns";
-import { mulberry32, pick, randInt } from "@/lib/utils";
+import { mulberry32, pick, randInt, seededShuffle } from "@/lib/utils";
 import {
   BRANCHES,
   DEPARTMENTS,
@@ -19,7 +19,7 @@ import {
        (managerCode always belongs to a strictly lower level index)
      • department headcounts match DEPARTMENTS[].headcount exactly
      • branch headcounts match BRANCHES[].headcount exactly
-     • the six demo personas occupy their reserved codes
+     • the eleven demo personas occupy their reserved codes
    ========================================================================== */
 
 export type EmployeeStatus = "active" | "probation" | "notice" | "exited" | "on_leave";
@@ -231,9 +231,7 @@ function generate(): Employee[] {
       hasBankDetails: hasBank,
       pan: `${["A","B","C","D","E"][randInt(rng, 0, 4)]}${["A","K","M","P","R"][randInt(rng, 0, 4)]}XPS${String(randInt(rng, 1000, 9999))}${["A","D","G","K","N"][randInt(rng, 0, 4)]}`,
       uan: `1010${String(randInt(rng, 10000000, 99999999))}`,
-      skills: [...(SKILLS[base.departmentId] ?? [])]
-        .sort(() => rng() - 0.5)
-        .slice(0, randInt(rng, 3, 5)),
+      skills: seededShuffle(rng, SKILLS[base.departmentId] ?? []).slice(0, randInt(rng, 3, 5)),
     };
   };
 

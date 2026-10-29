@@ -1,4 +1,13 @@
-import { addDays, addHours, addMinutes, addMonths, differenceInMinutes, format, parseISO } from "date-fns";
+import {
+  addDays,
+  addHours,
+  addMinutes,
+  addMonths,
+  differenceInCalendarDays,
+  differenceInMinutes,
+  format,
+  parseISO,
+} from "date-fns";
 import { mulberry32, pick, randInt, round2, sum } from "@/lib/utils";
 import { DEMO_NOW, DEMO_TODAY, deptName } from "./org";
 import { EMPLOYEES, employeeByCode, employeeName } from "./employees";
@@ -16,6 +25,9 @@ const TODAY = parseISO(DEMO_TODAY);
 
 const iso = (d: Date) => format(d, "yyyy-MM-dd'T'HH:mm:ss");
 const isoDate = (d: Date) => format(d, "yyyy-MM-dd");
+
+/** A seeded timestamp that would land after DEMO_NOW is pulled back to `hoursBefore` it. */
+const notAfterNow = (d: Date, hoursBefore: number) => (d > NOW ? addHours(NOW, -hoursBefore) : d);
 
 /** The six demo personas, in top-bar order — everything is seeded so each one
  *  has assets to hold, claims to file and tickets to read. */
@@ -126,7 +138,7 @@ const ASSET_COUNTS: Record<AssetCategory, number> = {
   Headset: 22,
   "Docking Station": 8,
   Tablet: 4,
-}; // = 180
+}; // = 180 generated, plus the persona kit appended below
 
 const CONDITIONS: AssetCondition[] = ["New", "Excellent", "Good", "Good", "Fair"];
 
@@ -233,7 +245,56 @@ function generateAssets(): Asset[] {
   return out;
 }
 
-export const ASSETS: Asset[] = generateAssets();
+/** Issued kit for the five personas added after the register was generated.
+ *  Appended (STL-AST-0181 onward) so every earlier tag, and every derivation
+ *  that indexes into the generated register, stays exactly where it was. */
+const EXTRA_PERSONA_ISSUES: [code: string, category: AssetCategory, model: number, purchased: string, allocated: string][] = [
+  ["STL-0008", "Laptop", 0, "2025-06-10", "2025-06-16"],
+  ["STL-0008", "Access Card", 0, "2023-01-09", "2023-01-12"],
+  ["STL-0005", "Laptop", 0, "2025-02-03", "2025-02-07"],
+  ["STL-0005", "Access Card", 0, "2023-01-09", "2023-01-12"],
+  ["STL-0305", "Laptop", 2, "2023-11-14", "2023-11-28"],
+  ["STL-0305", "Access Card", 0, "2023-11-20", "2023-11-28"],
+  ["STL-0010", "Laptop", 2, "2024-08-19", "2024-08-22"],
+  ["STL-0010", "Phone", 0, "2025-10-06", "2025-10-08"],
+  ["STL-0010", "Access Card", 0, "2023-01-09", "2023-01-12"],
+  ["STL-0296", "Laptop", 1, "2024-04-15", "2024-04-22"],
+  ["STL-0296", "Access Card", 0, "2023-01-16", "2023-01-18"],
+];
+
+function extraPersonaAssets(startAt: number): Asset[] {
+  const rng = mulberry32(48151);
+  return EXTRA_PERSONA_ISSUES.map(([code, category, modelIdx, purchased, allocated], i) => {
+    const tag = `STL-AST-${String(startAt + i).padStart(4, "0")}`;
+    const m = ASSET_MODELS[category][modelIdx];
+    const holder = employeeByCode(code)!;
+    const warrantyExpiry = addMonths(parseISO(purchased), m.warrantyMonths);
+    return {
+      id: tag,
+      tag,
+      category,
+      make: m.make,
+      model: m.model,
+      serial: serialFor(rng, category === "Access Card" ? "HID" : m.make.slice(0, 2).toUpperCase(), 9),
+      purchaseDate: purchased,
+      purchaseCost: m.cost,
+      warrantyExpiry: isoDate(warrantyExpiry),
+      inWarranty: warrantyExpiry > TODAY,
+      condition: warrantyExpiry > TODAY ? "Excellent" : "Good",
+      status: "allocated",
+      allocatedTo: code,
+      allocatedToName: holder.name,
+      allocatedOn: allocated,
+      branchId: holder.branchId,
+      location: holder.location,
+      vendor: m.vendor,
+      search: [tag, category, m.make, m.model, holder.name].join(" ").toLowerCase(),
+    } satisfies Asset;
+  });
+}
+
+const GENERATED_ASSETS = generateAssets();
+export const ASSETS: Asset[] = [...GENERATED_ASSETS, ...extraPersonaAssets(GENERATED_ASSETS.length + 1)];
 
 export const assetsFor = (employeeCode: string) => ASSETS.filter((a) => a.allocatedTo === employeeCode);
 
@@ -461,10 +522,14 @@ function generateClaims(): ExpenseClaim[] {
       const stem = pick(rng, RECEIPT_STEMS);
       const pdf = rng() > 0.45;
 
+      /* Every receipt falls inside the claim window, so none is dated after
+         DEMO_TODAY. The modulo keeps the seeded sequence intact. */
+      const offset = randInt(rng, 0, 20) % (differenceInCalendarDays(periodTo, periodFrom) + 1);
+
       lines.push({
         id: `${claimNo}-L${l + 1}`,
         category,
-        date: isoDate(addDays(periodFrom, randInt(rng, 0, 20))),
+        date: isoDate(addDays(periodFrom, offset)),
         description: pick(rng, EXPENSE_DESCRIPTIONS[category]),
         amount,
         receipt: `${stem}-${String(i + 1).padStart(3, "0")}${l + 1}.${pdf ? "pdf" : "jpg"}`,
@@ -493,9 +558,14 @@ function generateClaims(): ExpenseClaim[] {
                 ? "rejected"
                 : "cancelled";
 
-    const submittedOn = status === "draft" ? null : iso(addHours(periodTo, randInt(rng, 18, 72)));
+    /* Submission and decision never run past DEMO_NOW. */
+    const submittedOn =
+      status === "draft" ? null : iso(notAfterNow(addHours(periodTo, randInt(rng, 18, 72)), 6));
     const decided = ["approved", "rejected", "completed"].includes(status);
-    const decidedOn = decided && submittedOn ? iso(addHours(parseISO(submittedOn), randInt(rng, 4, 96))) : null;
+    const decidedOn =
+      decided && submittedOn
+        ? iso(notAfterNow(addHours(parseISO(submittedOn), randInt(rng, 4, 96)), 2))
+        : null;
 
     out.push({
       id: claimNo,
@@ -522,7 +592,9 @@ function generateClaims(): ExpenseClaim[] {
             ? "Approved with an exception noted against the over-limit line."
             : null,
       reimbursedOn:
-        status === "completed" && decidedOn ? isoDate(addDays(parseISO(decidedOn), randInt(rng, 2, 9))) : null,
+        status === "completed" && decidedOn
+          ? isoDate(notAfterNow(addDays(parseISO(decidedOn), randInt(rng, 2, 9)), 0))
+          : null,
       violationCount,
       hasViolation: violationCount > 0,
       search: `${claimNo} ${emp.name} ${emp.code} ${EXPENSE_PURPOSES[i % EXPENSE_PURPOSES.length]}`.toLowerCase(),
@@ -531,7 +603,87 @@ function generateClaims(): ExpenseClaim[] {
   return out;
 }
 
-export const EXPENSE_CLAIMS: ExpenseClaim[] = generateClaims();
+/* Ananya Rao's (Employee persona) own history, so her My claims tab reads like
+   a real year: two reimbursed claims and one sent back. Appended after the
+   seeded fifty, never submitted or approved-unpaid, so every approval queue,
+   finance queue and payroll reimbursement row derived elsewhere is unchanged.
+   Amounts are deliberately not multiples of ten — no false duplicate match. */
+type PersonaLineSeed = [ExpenseCategory, number, string, string];
+
+function personaClaim(
+  seq: number,
+  purpose: string,
+  seeds: PersonaLineSeed[],
+  status: "completed" | "rejected",
+  submittedOn: string,
+  decidedOn: string,
+  reimbursedOn: string | null,
+  decisionNote: string | null,
+): ExpenseClaim {
+  const code = PERSONA_EMPLOYEE_CODES[0];
+  const emp = employeeByCode(code)!;
+  const claimNo = `EXP-2026-${String(seq).padStart(4, "0")}`;
+  const lines: ExpenseLine[] = seeds.map(([category, amount, date, description], i) => {
+    const policy = policyFor(category)!;
+    const excess = Math.max(0, round2(amount - policy.limit));
+    return {
+      id: `${claimNo}-L${i + 1}`,
+      category,
+      date,
+      description,
+      amount,
+      receipt: `${i % 2 ? "IMG" : "invoice"}_${seq}${i + 1}.${i % 2 ? "jpg" : "pdf"}`,
+      receiptKind: i % 2 ? "photo" : "pdf",
+      limit: policy.limit,
+      limitBasis: policy.basis,
+      excess,
+      violation: excess > 0,
+    };
+  });
+  const dates = lines.map((l) => l.date).sort();
+  const violationCount = lines.filter((l) => l.violation).length;
+  const approverCode = emp.managerCode ?? "STL-0008";
+  return {
+    id: claimNo,
+    claimNo,
+    employeeCode: code,
+    employeeName: emp.name,
+    department: deptName(emp.departmentId),
+    purpose,
+    periodFrom: dates[0],
+    periodTo: dates[dates.length - 1],
+    lines,
+    total: round2(sum(lines.map((l) => l.amount))),
+    status,
+    submittedOn,
+    approverCode,
+    approverName: employeeName(approverCode),
+    decidedOn,
+    decisionNote,
+    reimbursedOn,
+    violationCount,
+    hasViolation: violationCount > 0,
+    search: `${claimNo} ${emp.name} ${emp.code} ${purpose}`.toLowerCase(),
+  };
+}
+
+const PERSONA_CLAIMS: ExpenseClaim[] = [
+  personaClaim(61, "Monthly home-office and connectivity reimbursement", [
+    ["Internet & Telecom", 1499, "2026-07-05", "ACT Fibernet broadband — home office, July"],
+    ["Office Supplies", 2187, "2026-07-11", "Ergonomic footrest and laptop riser for the home desk"],
+  ], "completed", "2026-07-14T10:20:00", "2026-07-15T17:05:00", "2026-07-31", null),
+  personaClaim(62, "On-site UAT support — Apollo Retail, Chennai", [
+    ["Travel – Cab", 1246, "2026-08-04", "Uber — Chennai Central to the Apollo Retail office, OMR"],
+    ["Accommodation", 5873, "2026-08-04", "Novotel Chennai OMR — 2 nights, UAT war-room"],
+    ["Meals", 1084, "2026-08-05", "Breakfast and dinner, day two of the on-site"],
+  ], "completed", "2026-08-07T09:45:00", "2026-08-08T12:30:00", "2026-08-31", null),
+  personaClaim(63, "Certification reimbursement under the L&D policy", [
+    ["Training", 27999, "2026-08-22", "AWS Solutions Architect Professional — exam and prep course"],
+  ], "rejected", "2026-08-25T11:10:00", "2026-08-27T15:40:00", null,
+  "Rejected — a course above the ₹25,000 cap needs L&D pre-approval. Raise it on the learning portal and re-file with the approval attached."),
+];
+
+export const EXPENSE_CLAIMS: ExpenseClaim[] = [...generateClaims(), ...PERSONA_CLAIMS];
 
 export const claimsFor = (employeeCode: string) =>
   EXPENSE_CLAIMS.filter((c) => c.employeeCode === employeeCode);
@@ -628,8 +780,9 @@ interface TravelSeed {
 
 const TRAVEL_SEEDS: TravelSeed[] = [
   {
+    /* Travelled 08–09 Sep; the receipts are claimed in EXP-2026-0051 (finance-expense.ts). */
     code: "STL-0142", purpose: "Customer QBR with Tata Digital — quarterly roadmap review", tripType: "Domestic",
-    startsInDays: 11, nights: 2, status: "approved",
+    startsInDays: -8, nights: 1, status: "completed",
     route: [
       { from: "Bengaluru", to: "Mumbai", mode: "Flight", carrier: "IndiGo 6E-2134", cost: 7400 },
       { from: "Mumbai", to: "Bengaluru", mode: "Flight", carrier: "IndiGo 6E-6112", cost: 8100 },
@@ -770,6 +923,16 @@ const TRAVEL_SEEDS: TravelSeed[] = [
       { from: "Coimbatore", to: "Bengaluru", mode: "Bus", carrier: "KSRTC Airavat Club Class", cost: 1300 },
     ],
   },
+  /* Appended (so every seeded value above is unchanged): the trip behind Ananya
+     Rao's reimbursed Chennai claim EXP-2026-0062. */
+  {
+    code: "STL-0142", purpose: "On-site UAT support — Apollo Retail, Chennai", tripType: "Domestic",
+    startsInDays: -43, nights: 2, status: "completed",
+    route: [
+      { from: "Bengaluru", to: "Chennai", mode: "Train", carrier: "Shatabdi Express 12007", cost: 1450 },
+      { from: "Chennai", to: "Bengaluru", mode: "Train", carrier: "Shatabdi Express 12008", cost: 1450 },
+    ],
+  },
 ];
 
 function generateTravel(): TravelRequest[] {
@@ -815,10 +978,13 @@ function generateTravel(): TravelRequest[] {
       seed.status === "draft" ? 0 : Math.round((estimatedCost * (0.4 + rng() * 0.35)) / 500) * 500;
     const advanceDisbursed =
       seed.status === "approved" || seed.status === "completed" ? advanceRequested : 0;
-    const advanceSettled =
-      seed.status === "completed" ? advanceDisbursed : Math.round((advanceDisbursed * 0.35) / 500) * 500;
+    /* Settlement happens against bills after the trip — an approved trip that
+       has not started yet carries its advance in hand, nothing settled. */
+    const advanceSettled = seed.status === "completed" ? advanceDisbursed : 0;
 
-    const submittedOn = seed.status === "draft" ? null : iso(addDays(start, -randInt(rng, 9, 26)));
+    /* Raised (and decided) before DEMO_NOW, even for trips a month out. */
+    const submittedOn =
+      seed.status === "draft" ? null : iso(notAfterNow(addDays(start, -randInt(rng, 9, 26)), 30 + i * 7));
     const decided = ["approved", "rejected", "completed"].includes(seed.status);
 
     return {
@@ -843,7 +1009,10 @@ function generateTravel(): TravelRequest[] {
       approverCode,
       approverName: employeeName(approverCode),
       submittedOn,
-      decidedOn: decided && submittedOn ? iso(addHours(parseISO(submittedOn), randInt(rng, 6, 70))) : null,
+      decidedOn:
+        decided && submittedOn
+          ? iso(notAfterNow(addHours(parseISO(submittedOn), randInt(rng, 6, 70)), 3))
+          : null,
       decisionNote:
         seed.status === "rejected"
           ? "Rejected — the partner meet can be covered remotely this quarter. Please re-raise if the customer escalates."
@@ -946,6 +1115,8 @@ interface TicketSeed {
   note: string;
   followUp?: string;
   resolution?: string;
+  /** Pins the requester; seeds without one take the next code from the pool. */
+  requester?: string;
 }
 
 const TICKET_SEEDS: TicketSeed[] = [
@@ -1315,6 +1486,55 @@ const TICKET_SEEDS: TicketSeed[] = [
     reply: "No need to attach the letter here — please send it directly to People Ops. Once they confirm, Facilities will order a sit-stand converter for your desk.",
     note: "Medical documentation stays with People Ops only. Facilities acts on the confirmation, never on the clinical detail.",
   },
+  /* Appended for the five later personas (HD-2026-0520 onward) — earlier
+     ticket numbers, requesters and SLA clocks are unchanged. Each is routed to
+     a team the requester does not work in, so no one is their own agent. */
+  {
+    category: "IT", priority: "Medium", requester: "STL-0008",
+    subject: "Power BI Pro licence shows as expired after the annual renewal",
+    description:
+      "Since Monday the finance cost dashboards open in read-only mode with a banner saying my Power BI Pro licence has expired. Procurement confirmed the renewal PO was raised on 1 September, so I think the seat has simply not been re-assigned to me.",
+    tags: ["licence", "power-bi", "finance"],
+    reply: "You are right — the renewed seats landed in the tenant but were not re-assigned. We have assigned a Pro seat to your account; please sign out of Power BI and back in.",
+    note: "Twelve renewed seats are still unassigned in the M365 admin centre. Reconcile them against the licence register before month-end close.",
+  },
+  {
+    category: "Access", priority: "High", requester: "STL-0005",
+    subject: "CRM pipeline dashboard access for two new regional sales leads",
+    description:
+      "Two regional sales leads joined the Pune team this month and still cannot see the pipeline dashboard in the CRM. The quarterly forecast review is on Friday and they need to present their territories.",
+    tags: ["access", "crm", "sales"],
+    reply: "We have the request. CRM roles need the department head's approval on record — this ticket counts as that approval, so we are provisioning the Sales Lead role for both now.",
+    note: "Joiner workflow did not include the CRM role for the Sales Lead designation. Add it to the role-to-application map so the next joiners get it on day one.",
+    followUp: "One of them can see the dashboard now, the other still gets 'insufficient privileges'.",
+  },
+  {
+    category: "IT", priority: "Low", requester: "STL-0305",
+    subject: "Second monitor for working the helpdesk queue",
+    description:
+      "Working the helpdesk queue on a single laptop screen means constant switching between the ticket, the knowledge base and the employee profile. Could I have a second monitor at my desk on 6F?",
+    tags: ["monitor", "hardware", "ergonomics"],
+    reply: "Approved under the standard desk kit. A 27-inch monitor is in stock at the Bengaluru store and will be set up at your desk tomorrow morning.",
+    note: "Issue from Bengaluru IT Store Room 7F stock; update the asset register when it is handed over.",
+  },
+  {
+    category: "Payroll", priority: "Medium", requester: "STL-0010",
+    subject: "Mobile reimbursement cap not updated after my grade revision",
+    description:
+      "My grade was revised in July, which moves the monthly mobile and internet cap from ₹1,500 to ₹2,500. The August claim was still capped at the old limit.",
+    tags: ["reimbursement", "grade", "telecom"],
+    reply: "Thanks — the grade change reached the salary structure but not the reimbursement policy mapping. We will pay the August difference as arrears in the September run.",
+    note: "Grade-linked reimbursement caps are cached per employee and not refreshed on a mid-year revision. Check every July revision for the same gap.",
+  },
+  {
+    category: "HR", priority: "Low", requester: "STL-0296",
+    subject: "Copy of my signed POSH acknowledgement for the audit file",
+    description:
+      "For the internal audit file I need a copy of my own signed POSH policy acknowledgement for FY 2026-27. The policy page shows it as accepted but there is no download option.",
+    tags: ["posh", "policy", "audit"],
+    reply: "We have attached the signed acknowledgement from the policy register to your documents. You can download it from My documents under Compliance.",
+    note: "Acknowledgement PDFs are generated on request only; the download option is on the roadmap for the policies page.",
+  },
 ];
 
 const HELPDESK_AGENTS: { code: string; team: string }[] = [
@@ -1350,7 +1570,7 @@ function generateTickets(): Ticket[] {
 
   return TICKET_SEEDS.map((seed, i) => {
     const ticketNo = `HD-2026-${String(400 + i * 3).padStart(4, "0")}`;
-    const requesterCode = requesterPool[i % requesterPool.length];
+    const requesterCode = seed.requester ?? requesterPool[i % requesterPool.length];
     const requester = employeeByCode(requesterCode)!;
     const agent = AGENT_BY_CATEGORY[seed.category];
 

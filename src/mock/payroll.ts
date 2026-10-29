@@ -650,6 +650,36 @@ export const RUN_POPULATION: Employee[] = EMPLOYEES.filter(
 
 export const OUT_OF_SCOPE_COUNT = EMPLOYEES.length - RUN_POPULATION.length;
 
+/**
+ * Whether a period's regular run pays this employee: on roll by the period end
+ * (a joining month is pro-rated in computeAmounts), and not leaving inside or
+ * before it — a leaver's final month is settled through full & final
+ * (mock/lifecycle-fnf.ts), so the regular run must not pay it a second time.
+ */
+export function onRunRoll(period: PayPeriod, emp: Employee) {
+  if (emp.joiningDate > period.periodEnd) return false;
+  return !emp.exitDate || emp.exitDate > period.periodEnd;
+}
+
+const populationCache = new Map<string, Employee[]>();
+
+/** The employees one period's run actually pays — the population every run output sums over. */
+export function runPopulation(periodId: string): Employee[] {
+  const period = periodById(periodId);
+  if (!period) return [];
+  const hit = populationCache.get(period.id);
+  if (hit) return hit;
+  const out = RUN_POPULATION.filter((e) => onRunRoll(period, e));
+  populationCache.set(period.id, out);
+  return out;
+}
+
+/** India employees whose last working day falls inside the period — paid through F&F instead. */
+export const leaversIn = (period: PayPeriod) =>
+  RUN_POPULATION.filter(
+    (e) => e.exitDate && e.exitDate >= period.periodStart && e.exitDate <= period.periodEnd,
+  );
+
 const EMP_INDEX = new Map(EMPLOYEES.map((e, i) => [e.code, i]));
 
 interface Variables {
@@ -678,6 +708,12 @@ function variablesFor(period: PayPeriod, emp: Employee, breakup: Breakup): Varia
 
   const arrears = c > 0.965 ? Math.round((breakup.gross * (0.04 + rng() * 0.09)) / 100) * 100 : 0;
   const advance = d > 0.955 ? Math.round((5000 + rng() * 15000) / 500) * 500 : 0;
+
+  /* A joiner is only on roll from the joining day: the joining month carries
+     no LOP, overtime, arrears or advance. The draws above still run, so every
+     other month keeps the same seeded sequence. */
+  if (emp.joiningDate.slice(0, 7) === period.id)
+    return { lopDays: 0, overtimeHours: 0, overtime: 0, arrears: 0, advance: 0 };
 
   const forced = period.id === "2026-09";
   return {
@@ -795,7 +831,9 @@ export function computeAmounts(period: PayPeriod, emp: Employee): Amounts {
   const esi = gross <= ESI_GROSS_CEILING ? Math.round(gross * ESI_EMPLOYEE_RATE) : 0;
   const ptResult = computeProfessionalTax(emp.branchId, gross, period.calendarMonth);
   const tax = computeTds(breakup.gross * 12);
-  const tds = ptResult.country === "US" ? 0 : tax.monthly;
+  /* A joining month withholds only its share of the monthly tax — a joiner on
+     the 31st must not have a month's TDS taken from one day's salary. */
+  const tds = ptResult.country === "US" ? 0 : prorated ? Math.round(tax.monthly * factor) : tax.monthly;
 
   const perDayRate = grossFixed / payableDays;
   const lop = v.lopDays > 0 ? Math.round(perDayRate * v.lopDays) : 0;
@@ -1138,11 +1176,12 @@ function buildStatutory(a: Amounts): PayComponent[] {
     label: "Income Tax (TDS)",
     group: "statutory",
     amount: a.tds,
-    ytd: ytdOf(a, a.tds, a.tds),
+    ytd: ytdOf(a, a.tax.monthly, a.tds),
     taxable: false,
     trace: {
-      formula:
-        "TDS = [slab tax on (Annual gross − ₹75,000 standard deduction), after 87A rebate, + 4% cess] ÷ 12",
+      formula: `TDS = [slab tax on (Annual gross − ₹75,000 standard deduction), after 87A rebate, + 4% cess] ÷ 12${
+        a.prorated ? " × payable days ÷ days in month" : ""
+      }`,
       substituted: `(${inr(t.annualGross)} − ${inr(STANDARD_DEDUCTION)}) = ${inr(
         t.annualTaxable,
       )} → ${slabLine} = ${inr(t.slabTax)} → ${
@@ -1151,7 +1190,7 @@ function buildStatutory(a: Amounts): PayComponent[] {
           : t.marginalReliefApplied
             ? `marginal relief → ${inr(t.taxAfterRebate)}`
             : `+ 4% cess ${inr(t.cess)} = ${inr(t.annualTax)}`
-      } → ÷ 12`,
+      } → ÷ 12${a.prorated ? ` × ${a.payableDays}/${a.daysInMonth}` : ""}`,
       result: inr(a.tds),
       inputs: [
         { label: "Annual gross", value: inr(t.annualGross) },
@@ -1441,7 +1480,8 @@ export function payslipFor(runId: string, employeeCode: string): Payslip | null 
 
   const period = periodById(runId);
   const emp = employeeByCode(employeeCode);
-  const ok = period && emp && (branchById(emp.branchId)?.country ?? "IN") === "IN";
+  const ok =
+    period && emp && (branchById(emp.branchId)?.country ?? "IN") === "IN" && onRunRoll(period, emp);
   const slip = ok ? buildPayslip(computeAmounts(period, emp)) : null;
   payslipCache.set(key, slip);
   return slip;
@@ -1510,7 +1550,7 @@ export interface PayRun {
 }
 
 function rowsForPeriod(period: PayPeriod): PayRunRow[] {
-  return RUN_POPULATION.map((emp) => {
+  return runPopulation(period.id).map((emp) => {
     const a = computeAmounts(period, emp);
     const dept = deptById(emp.departmentId);
     return {
@@ -1624,6 +1664,16 @@ function settledTimeline(p: PayPeriod): RunTimelineEntry[] {
   ];
 }
 
+/** Leavers in the open run are settled through F&F, so the run note names them. */
+function sepLeaverNote() {
+  const leavers = leaversIn(CURRENT_PERIOD);
+  if (!leavers.length) return "";
+  const names = leavers.map((e) => `${e.name} (last day ${format(parseISO(e.exitDate!), "d MMM")})`);
+  return ` ${names.join(", ")} ${leavers.length === 1 ? "leaves" : "leave"} this month and ${
+    leavers.length === 1 ? "is" : "are"
+  } paid through full & final settlement, not this run.`;
+}
+
 /** Every period the tenant has processed, newest first. */
 export const PAY_RUN_HISTORY: PayRun[] = PAY_PERIODS.slice()
   .reverse()
@@ -1632,7 +1682,7 @@ export const PAY_RUN_HISTORY: PayRun[] = PAY_PERIODS.slice()
       return buildRun(
         p,
         SEP_TIMELINE,
-        `Calculated on 16 Sep 2026. ${OUT_OF_SCOPE_COUNT} Newark NJ employees are processed on the US payroll and are out of scope for this run.`,
+        `Calculated on 16 Sep 2026. ${OUT_OF_SCOPE_COUNT} Newark NJ employees are processed on the US payroll and are out of scope for this run.${sepLeaverNote()}`,
       );
     if (p.id === PREVIOUS_PERIOD.id)
       return buildRun(
@@ -1733,35 +1783,19 @@ export interface CostTrendPoint {
 }
 
 /**
- * 12 months of payroll cost, ending with the period DEMO_TODAY sits in.
- *
- * The current population is priced for every month, then scaled by a headcount
- * index — the tenant grew roughly 8% over the year, so an earlier month was a
- * smaller payroll. The two most recent months carry an index of exactly 1.00,
- * so the last two points of the trend ARE the two pay-run totals.
+ * 12 months of payroll cost, ending with the period DEMO_TODAY sits in. Each
+ * point IS that period's run total — the population grows month by month as
+ * joiners come on roll, so the trend and the run list can never disagree.
  */
-export const PAYROLL_COST_TREND: CostTrendPoint[] = PAY_PERIODS.map((p, i) => {
-  const monthsBack = PAY_PERIODS.length - 1 - i;
-  const index = monthsBack <= 1 ? 1 : 1 - 0.0075 * (monthsBack - 1);
-  let gross = 0;
-  let net = 0;
-  let employer = 0;
-  for (const emp of RUN_POPULATION) {
-    const a = computeAmounts(p, emp);
-    gross += a.gross;
-    net += a.net;
-    employer += a.employerTotal;
-  }
-  gross = Math.round(gross * index);
-  net = Math.round(net * index);
-  employer = Math.round(employer * index);
+export const PAYROLL_COST_TREND: CostTrendPoint[] = PAY_PERIODS.map((p) => {
+  const t = totalsOf(payRunRows(p.id));
   return {
     month: p.shortLabel,
     periodId: p.id,
-    gross,
-    net,
-    employer,
-    ctc: gross + employer,
+    gross: t.gross,
+    net: t.net,
+    employer: t.employerCost,
+    ctc: t.costToCompany,
   };
 });
 
@@ -1842,8 +1876,7 @@ export interface PayslipListItem {
 export function payslipsFor(employeeCode: string): PayslipListItem[] {
   const emp = employeeByCode(employeeCode);
   if (!emp || (branchById(emp.branchId)?.country ?? "IN") !== "IN") return [];
-  const joinKey = emp.joiningDate.slice(0, 7);
-  return PAY_PERIODS.filter((p) => p.id >= joinKey)
+  return PAY_PERIODS.filter((p) => onRunRoll(p, emp))
     .map((p) => {
       const a = computeAmounts(p, emp);
       return {

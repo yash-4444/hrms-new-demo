@@ -2,92 +2,49 @@
 
 import * as React from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import type { ColumnDef } from "@tanstack/react-table";
-import {
-  Check,
-  Laptop,
-  PackageCheck,
-  PackageX,
-  Plus,
-  ShieldCheck,
-  Undo2,
-  Wrench,
-} from "lucide-react";
+import { Ban, Laptop, PackageCheck, PackagePlus, PackageX, Plus, ShieldCheck, Undo2, Wrench } from "lucide-react";
 import { fmtDate, inr, inrCompact, num } from "@/lib/format";
 import { BRANCHES } from "@/mock/org";
-import { EMPLOYEES, employeeName } from "@/mock/employees";
-import {
-  ASSETS,
-  ASSET_ALLOCATION_BY_CATEGORY,
-  ASSET_CATEGORIES,
-  ASSETS_BY_CATEGORY,
-  type Asset,
-  type AssetCondition,
-} from "@/mock/workplace";
+import { ASSETS, ASSET_ALLOCATION_BY_CATEGORY, ASSET_CATEGORIES, ASSETS_BY_CATEGORY, type Asset } from "@/mock/workplace";
 import { mockAction, useApp } from "@/components/app-state";
 import { DataTable, NumCell } from "@/components/data-table";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import {
-  Alert,
-  Avatar,
-  Badge,
-  Checkbox,
-  EmptyState,
-  Field,
-  Input,
-  Label,
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@/components/ui/primitives";
-import {
-  ConfirmDialog,
-  Dialog,
-  DialogBody,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  FilterSelect,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-} from "@/components/ui/overlays";
+import { Avatar, Badge, Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/primitives";
+import { ConfirmDialog, FilterSelect } from "@/components/ui/overlays";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { BarCompareChart, DonutChart } from "@/components/charts";
 import { StatRow, StatTile } from "@/components/charts/stat-tile";
-import {
-  Gated,
-  PageBody,
-  PageHeader,
-  Section,
-  TableSkeleton,
-  useFakeLoad,
-} from "@/components/shell/page";
+import { CardsSkeleton, Gated, PageBody, PageHeader, TableSkeleton, useFakeLoad } from "@/components/shell/page";
+import { AssetAllocationDialog, NO_PRESELECTION, type AssetAllocation } from "@/components/workplace/asset-allocation-dialog";
+import { MyAssetCards } from "@/components/workplace/my-asset-cards";
 
-const CONDITIONS: AssetCondition[] = ["New", "Excellent", "Good", "Fair", "Needs repair"];
+/* ============================================================================
+   /assets — persona-aware. Everyone lands on the equipment they hold
+   (my.assets); a persona holding workplace.assets gets the full register,
+   with every admin control gated on that key and a row opening /assets/<id>.
+   ========================================================================== */
+
+type Batch = { rows: Asset[]; clear: () => void };
 
 export default function AssetsPage() {
   const loading = useFakeLoad();
-  const { persona } = useApp();
+  const router = useRouter();
+  const { persona, can } = useApp();
+  const isAdmin = can("workplace.assets", "V");
 
   const [assets, setAssets] = React.useState<Asset[]>(ASSETS);
+  const [tab, setTab] = React.useState("register");
   const [category, setCategory] = React.useState("all");
   const [status, setStatus] = React.useState("all");
   const [branch, setBranch] = React.useState("all");
-  const [allocating, setAllocating] = React.useState<Asset | null>(null);
+  const [allocating, setAllocating] = React.useState<{ open: boolean; preselected: Asset[]; clear?: () => void }>({
+    open: false,
+    preselected: NO_PRESELECTION,
+  });
   const [returning, setReturning] = React.useState<Asset | null>(null);
-
-  /* allocation form */
-  const [toCode, setToCode] = React.useState("STL-0142");
-  const [allocDate, setAllocDate] = React.useState("2026-09-16");
-  const [condition, setCondition] = React.useState<AssetCondition>("Excellent");
-  const [acknowledged, setAcknowledged] = React.useState(false);
-  const [formError, setFormError] = React.useState<string | null>(null);
+  const [retiring, setRetiring] = React.useState<(Batch & { lost: boolean }) | null>(null);
 
   const filtered = React.useMemo(
     () =>
@@ -99,71 +56,85 @@ export default function AssetsPage() {
       ),
     [assets, category, status, branch],
   );
-
-  const mine = React.useMemo(
-    () => assets.filter((a) => a.allocatedTo === persona.employeeId),
-    [assets, persona.employeeId],
-  );
+  const mine = React.useMemo(() => assets.filter((a) => a.allocatedTo === persona.employeeId), [assets, persona.employeeId]);
+  const stock = React.useMemo(() => assets.filter((a) => a.status === "in_stock"), [assets]);
 
   const stats = React.useMemo(
     () => ({
       total: assets.length,
       allocated: assets.filter((a) => a.status === "allocated").length,
-      inStock: assets.filter((a) => a.status === "in_stock").length,
+      inStock: stock.length,
       repair: assets.filter((a) => a.status === "under_repair").length,
-      value: assets.reduce((s, a) => s + a.purchaseCost, 0),
+      value: assets.filter((a) => a.status !== "retired" && a.status !== "lost").reduce((s, a) => s + a.purchaseCost, 0),
       outOfWarranty: assets.filter((a) => !a.inWarranty && a.status === "allocated").length,
     }),
-    [assets],
+    [assets, stock.length],
   );
 
-  const openAllocate = (a: Asset) => {
-    setAllocating(a);
-    setToCode("STL-0142");
-    setAllocDate("2026-09-16");
-    setCondition(a.condition);
-    setAcknowledged(false);
-    setFormError(null);
+  /* ----------------------------------------------------------- mutations */
+
+  const update = (ids: string[], patch: (a: Asset) => Partial<Asset>) => {
+    const set = new Set(ids);
+    setAssets((as) => as.map((a) => (set.has(a.id) ? { ...a, ...patch(a) } : a)));
   };
 
-  const allocate = () => {
-    if (!allocating) return;
-    if (!acknowledged) {
-      setFormError("The employee must acknowledge the asset handover policy before allocation.");
-      return;
-    }
-    setAssets((as) =>
-      as.map((a) =>
-        a.id === allocating.id
-          ? {
-              ...a,
-              status: "allocated",
-              allocatedTo: toCode,
-              allocatedToName: employeeName(toCode),
-              allocatedOn: allocDate,
-              condition,
-            }
-          : a,
-      ),
-    );
-    mockAction(`${allocating.tag} allocated`, {
-      description: `${allocating.make} ${allocating.model} → ${employeeName(toCode)} on ${fmtDate(allocDate)}.`,
+  const allocate = (al: AssetAllocation) => {
+    const before = assets;
+    update(al.assetIds, () => ({
+      status: "allocated",
+      allocatedTo: al.employeeCode,
+      allocatedToName: al.employeeName,
+      allocatedOn: al.allocationDate,
+      condition: al.condition,
+      location: al.employeeLocation,
+    }));
+    allocating.clear?.();
+    mockAction(al.assetIds.length === 1 ? `${al.assetIds[0]} allocated` : `${al.assetIds.length} assets allocated`, {
+      description: `Handed to ${al.employeeName} on ${fmtDate(al.allocationDate)}. It shows in their My assets straight away.`,
+      undo: () => setAssets(before),
     });
-    setAllocating(null);
   };
 
   const returnAsset = (a: Asset) => {
-    setAssets((as) =>
-      as.map((x) =>
-        x.id === a.id
-          ? { ...x, status: "in_stock", allocatedTo: null, allocatedToName: "—", allocatedOn: null }
-          : x,
-      ),
-    );
+    const before = assets;
+    update([a.id], () => ({ status: "in_stock", allocatedTo: null, allocatedToName: "—", allocatedOn: null }));
     mockAction(`${a.tag} returned to stock`, {
       description: `Recovered from ${a.allocatedToName}. Condition logged as ${a.condition}.`,
+      undo: () => setAssets(before),
     });
   };
+
+  const sendForRepair = ({ rows, clear }: Batch) => {
+    const before = assets;
+    update(
+      rows.map((r) => r.id),
+      () => ({ status: "under_repair", condition: "Needs repair" }),
+    );
+    clear();
+    mockAction(`${rows.length} asset${rows.length === 1 ? "" : "s"} sent for repair`, {
+      description: "A service ticket has been raised with each vendor.",
+      undo: () => setAssets(before),
+    });
+  };
+
+  const retire = (batch: Batch & { lost: boolean }, reason: string) => {
+    const before = assets;
+    update(
+      batch.rows.map((r) => r.id),
+      () => ({ status: batch.lost ? "lost" : "retired", allocatedTo: null, allocatedToName: "—", allocatedOn: null }),
+    );
+    batch.clear();
+    mockAction(
+      `${batch.rows.length} asset${batch.rows.length === 1 ? "" : "s"} ${batch.lost ? "written off as lost" : "retired"}`,
+      {
+        description: `${inr(batch.rows.reduce((s, a) => s + a.purchaseCost, 0), { decimals: false })} removed from the register value. Reason: “${reason}”`,
+        tone: "warning",
+        undo: () => setAssets(before),
+      },
+    );
+  };
+
+  /* -------------------------------------------------------------- columns */
 
   const columns = React.useMemo<ColumnDef<Asset, unknown>[]>(
     () => [
@@ -180,9 +151,7 @@ export default function AssetsPage() {
             <span className="font-medium">
               {row.original.make} {row.original.model}
             </span>
-            <span className="font-mono text-[10px] text-muted-foreground">
-              SN {row.original.serial}
-            </span>
+            <span className="font-mono text-[10px] text-muted-foreground">SN {row.original.serial}</span>
           </span>
         ),
       },
@@ -242,67 +211,104 @@ export default function AssetsPage() {
         id: "actions",
         header: "",
         enableSorting: false,
+        enableHiding: false,
         cell: ({ row }) => (
-          <Gated menuKey="workplace.assets" action="E">
-            {row.original.status === "allocated" ? (
-              <Button variant="outline" size="sm" onClick={() => setReturning(row.original)}>
-                <Undo2 /> Return
-              </Button>
-            ) : (
-              <Button
-                size="sm"
-                disabled={row.original.status === "retired" || row.original.status === "lost"}
-                onClick={() => openAllocate(row.original)}
-              >
-                Allocate
-              </Button>
-            )}
-          </Gated>
+          <div className="flex justify-end" onClick={(e) => e.stopPropagation()}>
+            <Gated menuKey="workplace.assets" action="E">
+              {row.original.status === "allocated" ? (
+                <Button variant="outline" size="sm" onClick={() => setReturning(row.original)}>
+                  <Undo2 /> Return
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  disabled={row.original.status !== "in_stock"}
+                  onClick={() => setAllocating({ open: true, preselected: [row.original] })}
+                >
+                  Allocate
+                </Button>
+              )}
+            </Gated>
+          </div>
         ),
       },
     ],
     [],
   );
 
+  /* ---------------------------------------------------------------- render */
+
+  const requestLink = can("workplace.asset_requests", "V") && (
+    <Button size="sm" variant={isAdmin ? "outline" : "default"} asChild>
+      <Link href="/assets/requests">
+        <PackagePlus /> Request an asset
+      </Link>
+    </Button>
+  );
+
+  const header = (
+    <PageHeader
+      title={isAdmin ? "Assets" : "My assets"}
+      description={
+        isAdmin
+          ? "Every laptop, monitor, phone and access card Stellar owns, and who is holding it."
+          : "The equipment issued to you. Report a fault here, or request something new and IT ships it from stock."
+      }
+      actions={
+        isAdmin ? (
+          <>
+            {requestLink}
+            <Gated menuKey="workplace.assets" action="E">
+              <Button size="sm" variant="outline" onClick={() => setAllocating({ open: true, preselected: NO_PRESELECTION })}>
+                <PackageCheck /> Allocate from stock
+              </Button>
+            </Gated>
+            <Gated menuKey="workplace.assets" action="C">
+              <Button
+                size="sm"
+                onClick={() =>
+                  mockAction("Asset added to the register", {
+                    description: "A new tag is issued automatically in the STL-AST-#### series.",
+                  })
+                }
+              >
+                <Plus /> Add asset
+              </Button>
+            </Gated>
+          </>
+        ) : (
+          requestLink
+        )
+      }
+    />
+  );
+
   if (loading) {
     return (
       <PageBody>
-        <PageHeader title="Assets" description="Loading the register…" />
+        {header}
+        {isAdmin && <CardsSkeleton count={5} />}
         <TableSkeleton />
+      </PageBody>
+    );
+  }
+
+  if (!isAdmin) {
+    return (
+      <PageBody>
+        {header}
+        <MyAssetCards assets={mine} holderName={persona.name} />
       </PageBody>
     );
   }
 
   return (
     <PageBody>
-      <PageHeader
-        title="Assets"
-        description="Every laptop, monitor, phone and access card Stellar owns, and who is holding it."
-        actions={
-          <Gated menuKey="workplace.assets" action="C">
-            <Button
-              size="sm"
-              onClick={() =>
-                mockAction("Asset added to the register", {
-                  description: "A new tag is issued automatically in the STL-AST-#### series.",
-                })
-              }
-            >
-              <Plus /> Add asset
-            </Button>
-          </Gated>
-        }
-      />
+      {header}
 
       <StatRow cols={5}>
         <StatTile label="Total assets" value={num(stats.total)} icon={Laptop} hint={`${ASSET_CATEGORIES.length} categories`} />
-        <StatTile
-          label="Allocated"
-          value={num(stats.allocated)}
-          icon={PackageCheck}
-          tone="good"
-          onClick={() => setStatus("allocated")}
-        />
+        <StatTile label="Allocated" value={num(stats.allocated)} icon={PackageCheck} tone="good" onClick={() => setStatus("allocated")} />
         <StatTile label="In stock" value={num(stats.inStock)} icon={PackageX} onClick={() => setStatus("in_stock")} />
         <StatTile
           label="Under repair"
@@ -319,7 +325,7 @@ export default function AssetsPage() {
         />
       </StatRow>
 
-      <Tabs defaultValue="register">
+      <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
           <TabsTrigger value="register">
             <Laptop /> Register
@@ -330,14 +336,16 @@ export default function AssetsPage() {
         </TabsList>
 
         <TabsContent value="register" className="flex flex-col gap-3">
-          <DataTable
+          <DataTable<Asset>
             columns={columns}
             data={filtered}
-            searchKeys={["search"]}
+            searchKeys={["search", "serial"]}
             searchPlaceholder="Search tag, make, serial, holder…"
             exportName="asset-register"
+            canExport={can("workplace.assets", "X")}
             getRowId={(a) => a.id}
-            enableSelection
+            onRowClick={(a) => router.push(`/assets/${a.id}`)}
+            enableSelection={can("workplace.assets", "E") || can("workplace.assets", "D")}
             pageSize={15}
             emptyIcon={Laptop}
             emptyTitle="No assets match"
@@ -377,49 +385,46 @@ export default function AssetsPage() {
                 />
               </>
             }
-            bulkActions={(selected, clear) => (
-              <>
-                <Gated menuKey="workplace.assets" action="E">
-                  <Button
-                    size="sm"
-                    onClick={() => {
-                      setAssets((as) =>
-                        as.map((a) =>
-                          selected.some((s) => s.id === a.id) ? { ...a, status: "under_repair" } : a,
-                        ),
-                      );
-                      mockAction(`${selected.length} asset(s) sent for repair`, {
-                        description: "A service ticket has been raised with the vendor.",
-                      });
-                      clear();
-                    }}
-                  >
-                    <Wrench /> Send for repair
-                  </Button>
-                </Gated>
-                <Gated menuKey="workplace.assets" action="D">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      setAssets((as) =>
-                        as.map((a) =>
-                          selected.some((s) => s.id === a.id)
-                            ? { ...a, status: "retired", allocatedTo: null, allocatedToName: "—" }
-                            : a,
-                        ),
-                      );
-                      mockAction(`${selected.length} asset(s) retired`, {
-                        description: "Removed from the active register and written off.",
-                      });
-                      clear();
-                    }}
-                  >
-                    Retire
-                  </Button>
-                </Gated>
-              </>
-            )}
+            bulkActions={(rows, clear) => {
+              const live = rows.filter((a) => a.status !== "retired" && a.status !== "lost");
+              const allInStock = rows.every((a) => a.status === "in_stock");
+              return (
+                <>
+                  {allInStock && (
+                    <Gated menuKey="workplace.assets" action="E">
+                      <Button size="sm" onClick={() => setAllocating({ open: true, preselected: rows, clear })}>
+                        <PackageCheck /> Allocate {rows.length}
+                      </Button>
+                    </Gated>
+                  )}
+                  <Gated menuKey="workplace.assets" action="E">
+                    <Button size="sm" variant="outline" disabled={!live.length} onClick={() => sendForRepair({ rows: live, clear })}>
+                      <Wrench /> Send for repair
+                    </Button>
+                  </Gated>
+                  <Gated menuKey="workplace.assets" action="D">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={!live.length}
+                      onClick={() => setRetiring({ rows: live, clear, lost: false })}
+                    >
+                      <Ban /> Retire
+                    </Button>
+                  </Gated>
+                  <Gated menuKey="workplace.assets" action="D">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={!live.length}
+                      onClick={() => setRetiring({ rows: live, clear, lost: true })}
+                    >
+                      Write off as lost
+                    </Button>
+                  </Gated>
+                </>
+              );
+            }}
           />
 
           <div className="grid gap-3 lg:grid-cols-2">
@@ -453,163 +458,17 @@ export default function AssetsPage() {
         </TabsContent>
 
         <TabsContent value="mine">
-          {mine.length === 0 ? (
-            <EmptyState
-              icon={Laptop}
-              title="No assets allocated to you"
-              description={`Nothing in the register is currently assigned to ${persona.name}. Raise a helpdesk ticket if you need equipment.`}
-              action={
-                <Button size="sm" asChild>
-                  <Link href="/helpdesk">Raise a request</Link>
-                </Button>
-              }
-            />
-          ) : (
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
-              {mine.map((a) => (
-                <Card key={a.id} className="p-3.5">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold">
-                        {a.make} {a.model}
-                      </p>
-                      <p className="font-mono text-[11px] text-muted-foreground">{a.tag}</p>
-                    </div>
-                    <StatusBadge status={a.status} />
-                  </div>
-                  <dl className="mt-2.5 grid grid-cols-2 gap-x-3 gap-y-1.5 border-t border-border pt-2.5 text-[11px]">
-                    {[
-                      ["Serial", a.serial],
-                      ["Condition", a.condition],
-                      ["Allocated on", a.allocatedOn ? fmtDate(a.allocatedOn) : "—"],
-                      ["Warranty", a.inWarranty ? `until ${fmtDate(a.warrantyExpiry)}` : "Expired"],
-                    ].map(([k, v]) => (
-                      <React.Fragment key={k}>
-                        <dt className="text-muted-foreground">{k}</dt>
-                        <dd className="truncate text-right font-medium">{v}</dd>
-                      </React.Fragment>
-                    ))}
-                  </dl>
-                  <div className="mt-2.5 flex gap-1.5 border-t border-border pt-2.5">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="flex-1"
-                      onClick={() =>
-                        mockAction("Support ticket raised", {
-                          description: `${a.tag} — an IT engineer will contact you within the SLA.`,
-                        })
-                      }
-                    >
-                      <Wrench /> Report issue
-                    </Button>
-                    <Button variant="ghost" size="sm" onClick={() => setReturning(a)}>
-                      <Undo2 /> Return
-                    </Button>
-                  </div>
-                </Card>
-              ))}
-            </div>
-          )}
+          <MyAssetCards assets={mine} holderName={persona.name} />
         </TabsContent>
       </Tabs>
 
-      {/* ------------------------------------------------ allocation dialog */}
-      <Dialog open={!!allocating} onOpenChange={(o) => !o && setAllocating(null)}>
-        <DialogContent size="md">
-          {allocating && (
-            <>
-              <DialogHeader>
-                <DialogTitle>Allocate {allocating.tag}</DialogTitle>
-                <DialogDescription>
-                  {allocating.make} {allocating.model} · serial {allocating.serial} ·{" "}
-                  {inr(allocating.purchaseCost, { decimals: false })}
-                </DialogDescription>
-              </DialogHeader>
-              <DialogBody className="flex flex-col gap-3">
-                <Field label="Allocate to" htmlFor="alloc-to" required>
-                  <Select value={toCode} onValueChange={setToCode}>
-                    <SelectTrigger id="alloc-to">
-                      <span className="truncate text-xs">
-                        {employeeName(toCode)} · {toCode}
-                      </span>
-                    </SelectTrigger>
-                    <SelectContent>
-                      {EMPLOYEES.slice(0, 60).map((e) => (
-                        <SelectItem key={e.code} value={e.code}>
-                          {e.name} · {e.code} · {e.designation}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </Field>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <Field label="Allocation date" htmlFor="alloc-date" required>
-                    <Input
-                      id="alloc-date"
-                      type="date"
-                      value={allocDate}
-                      onChange={(e) => setAllocDate(e.target.value)}
-                    />
-                  </Field>
-                  <Field label="Condition at handover" htmlFor="alloc-cond" required>
-                    <Select value={condition} onValueChange={(v) => setCondition(v as AssetCondition)}>
-                      <SelectTrigger id="alloc-cond">
-                        <span className="text-xs">{condition}</span>
-                      </SelectTrigger>
-                      <SelectContent>
-                        {CONDITIONS.map((c) => (
-                          <SelectItem key={c} value={c}>
-                            {c}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                </div>
-
-                {!allocating.inWarranty && (
-                  <Alert tone="warning" title="Out of warranty">
-                    Warranty expired on {fmtDate(allocating.warrantyExpiry)}. Any repair will be billed
-                    to the cost centre rather than covered by {allocating.vendor}.
-                  </Alert>
-                )}
-
-                <label className="flex cursor-pointer items-start gap-2 rounded-md border border-border p-2.5">
-                  <Checkbox
-                    checked={acknowledged}
-                    onCheckedChange={(v) => {
-                      setAcknowledged(!!v);
-                      if (v) setFormError(null);
-                    }}
-                    aria-label="Handover acknowledged"
-                  />
-                  <span className="text-[11px] leading-relaxed">
-                    <span className="font-medium">{employeeName(toCode)}</span> acknowledges receipt
-                    and accepts responsibility for the asset under the IT equipment policy, including
-                    return on exit.
-                  </span>
-                </label>
-
-                {formError && (
-                  <p role="alert" className="text-xs text-destructive-fg">
-                    {formError}
-                  </p>
-                )}
-              </DialogBody>
-              <DialogFooter>
-                <Button variant="outline" onClick={() => setAllocating(null)}>
-                  Cancel
-                </Button>
-                <Button onClick={allocate}>
-                  <Check /> Allocate
-                </Button>
-              </DialogFooter>
-            </>
-          )}
-        </DialogContent>
-      </Dialog>
+      <AssetAllocationDialog
+        open={allocating.open}
+        onOpenChange={(open) => setAllocating((s) => (open ? { ...s, open } : { open: false, preselected: NO_PRESELECTION }))}
+        preselected={allocating.preselected}
+        stock={stock}
+        onAllocate={allocate}
+      />
 
       <ConfirmDialog
         open={!!returning}
@@ -622,6 +481,31 @@ export default function AssetsPage() {
         }
         confirmLabel="Return to stock"
         onConfirm={() => returning && returnAsset(returning)}
+      />
+
+      <ConfirmDialog
+        open={!!retiring}
+        onOpenChange={(o) => !o && setRetiring(null)}
+        title={
+          retiring?.lost
+            ? `Write off ${retiring.rows.length} asset${retiring.rows.length === 1 ? "" : "s"} as lost?`
+            : `Retire ${retiring?.rows.length ?? 0} asset${retiring?.rows.length === 1 ? "" : "s"}?`
+        }
+        description={
+          retiring &&
+          `${inr(retiring.rows.reduce((s, a) => s + a.purchaseCost, 0), { decimals: false })} at cost leaves the active register${
+            retiring.rows.some((a) => a.allocatedTo) ? ", and the current holders are unassigned" : ""
+          }. The reason is kept on each asset's history for the auditors.`
+        }
+        confirmLabel={retiring?.lost ? "Write off" : "Retire"}
+        destructive
+        comment={{
+          label: "Reason",
+          placeholder: retiring?.lost
+            ? "e.g. Reported stolen on the 14 Sep commute — FIR 1128/2026 attached."
+            : "e.g. Battery swollen, beyond economical repair.",
+        }}
+        onConfirm={(reason) => retiring && retire(retiring, reason)}
       />
     </PageBody>
   );

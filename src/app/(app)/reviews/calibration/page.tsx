@@ -49,6 +49,7 @@ import {
   Section,
   useFakeLoad,
 } from "@/components/shell/page";
+import { CalibrationBiasHint } from "@/components/ai/embed/review-calibration-bias";
 
 /* ============================================================================
    /reviews/calibration — the 9-box.
@@ -170,6 +171,8 @@ export default function CalibrationPage() {
           . Calibration exists to correct exactly this.
         </Alert>
       )}
+
+      <CalibrationBiasHint />
 
       <div className="grid gap-3 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
         {/* ------------------------------------------------- the 9-box */}

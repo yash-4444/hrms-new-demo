@@ -82,6 +82,7 @@ export const STATUS_MAP: Record<string, StatusDef> = {
   failed: S("Failed", "danger", Octagon),
   scheduled: S("Scheduled", "info", Clock),
   running: S("Running", "info", Hourglass),
+  published: S("Published", "success", Check),
 
   /* employment */
   active: S("Active", "success", Check),

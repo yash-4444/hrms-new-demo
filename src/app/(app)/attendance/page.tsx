@@ -48,6 +48,8 @@ import {
   type CellState,
 } from "@/mock/attendance";
 import { DEMO_TODAY } from "@/mock/org";
+import { modelAttendanceFlags, patternFlags } from "@/components/ai/embed/attendance-ai";
+import { AttendanceFlagsPanel } from "@/components/ai/embed/attendance-ai-ui";
 
 const FIRST_MONTH = { y: 2026, m: 6 };
 const LAST_MONTH = { y: 2026, m: 9 };
@@ -75,6 +77,12 @@ export default function MyAttendancePage() {
       ).length,
     [code],
   );
+
+  /* Model anomalies about this person first; otherwise rule checks over their own punches. */
+  const aiFlags = React.useMemo(() => {
+    const model = modelAttendanceFlags((c) => c === code);
+    return model.length ? model : patternFlags(code);
+  }, [code]);
 
   const counts = React.useMemo(() => {
     const c: Partial<Record<CellState, number>> = {};
@@ -187,6 +195,15 @@ export default function MyAttendancePage() {
             href="/attendance/amendments"
           />
         </StatRow>
+      )}
+
+      {!loading && (
+        <AttendanceFlagsPanel
+          flags={aiFlags}
+          title="AI punch check"
+          description="Patterns spotted in your last 30 days of punches — fix them before month-end finalisation. Visible to you and your manager only."
+          emptyText="Nothing unusual in your last 30 days of punches."
+        />
       )}
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">

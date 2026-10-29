@@ -21,6 +21,7 @@ import {
   type LeaveTypeCode,
 } from "@/mock/leave";
 import { mockAction } from "@/components/app-state";
+import { ApplyLeaveAiHints } from "@/components/ai/embed/leave-ai-ui";
 import { Button } from "@/components/ui/button";
 import { Alert, Field, Input, RadioGroup, RadioGroupItem, Switch, Textarea } from "@/components/ui/primitives";
 import {
@@ -36,6 +37,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  useDiscardGuard,
 } from "@/components/ui/overlays";
 
 /* ============================================================================
@@ -152,7 +154,7 @@ export function ApplyLeaveDialog({
     reset,
     setValue,
     watch,
-    formState: { errors, isSubmitting },
+    formState: { errors, isSubmitting, isDirty },
   } = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: emptyValues(),
@@ -168,6 +170,9 @@ export function ApplyLeaveDialog({
     // `prefill` is read only at open time, deliberately.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, reset, employee?.phone]);
+
+  const close = React.useCallback(() => onOpenChange(false), [onOpenChange]);
+  const { requestClose, guard } = useDiscardGuard(isDirty, close);
 
   const typeCode = watch("typeCode");
   const fromDate = watch("fromDate");
@@ -220,7 +225,7 @@ export function ApplyLeaveDialog({
   }, [multiDay, halfDaySecond, setValue]);
 
   const attach = (name: string) => {
-    setValue("documentName", name, { shouldValidate: true });
+    setValue("documentName", name, { shouldValidate: true, shouldDirty: true });
     mockAction("Document attached", { description: `${name} — stored against the request.`, tone: "info" });
   };
 
@@ -265,304 +270,320 @@ export function ApplyLeaveDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent size="lg">
-        <DialogHeader>
-          <DialogTitle>Apply for leave</DialogTitle>
-          <DialogDescription>
-            {employee?.name ?? employeeCode} · {employee?.designation ?? "—"} · approver{" "}
-            {employeeName(employee?.managerCode ?? "STL-0001")}
-          </DialogDescription>
-        </DialogHeader>
+    <>
+      <Dialog open={open} onOpenChange={(v) => (v ? onOpenChange(true) : requestClose())}>
+        <DialogContent size="lg">
+          <DialogHeader>
+            <DialogTitle>Apply for leave</DialogTitle>
+            <DialogDescription>
+              {employee?.name ?? employeeCode} · {employee?.designation ?? "—"} · approver{" "}
+              {employeeName(employee?.managerCode ?? "STL-0001")}
+            </DialogDescription>
+          </DialogHeader>
 
-        <form onSubmit={handleSubmit(onSubmit)} className="flex min-h-0 flex-1 flex-col">
-          <DialogBody className="flex flex-col gap-3.5">
-            <Field label="Leave type" htmlFor="leave-type" error={errors.typeCode?.message} required>
-              <Controller
-                control={control}
-                name="typeCode"
-                render={({ field }) => (
-                  <Select value={field.value} onValueChange={field.onChange}>
-                    <SelectTrigger id="leave-type" aria-label="Leave type">
-                      <SelectValue placeholder="Choose a leave type" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {APPLICABLE_TYPES.map((code) => {
-                        const t = LEAVE_TYPE_BY_CODE[code];
-                        const b = balances.find((x) => x.typeCode === code);
-                        return (
-                          <SelectItem key={code} value={code}>
-                            {t.name}
-                            {t.tracksBalance ? ` · ${b?.available ?? 0} available` : " · unpaid"}
-                          </SelectItem>
-                        );
-                      })}
-                    </SelectContent>
-                  </Select>
-                )}
-              />
-            </Field>
-
-            {type && (
-              <p className="-mt-1.5 text-xs text-muted-foreground">{type.description}</p>
-            )}
-
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="From" htmlFor="from-date" error={errors.fromDate?.message} required>
-                <Input
-                  id="from-date"
-                  type="date"
-                  aria-invalid={!!errors.fromDate}
-                  {...register("fromDate", {
-                    onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
-                      // Keep the range valid while the user types.
-                      if (!toDate || toDate < e.target.value) setValue("toDate", e.target.value);
-                    },
-                  })}
+          <form onSubmit={handleSubmit(onSubmit)} className="flex min-h-0 flex-1 flex-col">
+            <DialogBody className="flex flex-col gap-3.5">
+              <Field label="Leave type" htmlFor="leave-type" error={errors.typeCode?.message} required>
+                <Controller
+                  control={control}
+                  name="typeCode"
+                  render={({ field }) => (
+                    <Select value={field.value} onValueChange={field.onChange}>
+                      <SelectTrigger id="leave-type" aria-label="Leave type">
+                        <SelectValue placeholder="Choose a leave type" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {APPLICABLE_TYPES.map((code) => {
+                          const t = LEAVE_TYPE_BY_CODE[code];
+                          const b = balances.find((x) => x.typeCode === code);
+                          return (
+                            <SelectItem key={code} value={code}>
+                              {t.name}
+                              {t.tracksBalance ? ` · ${b?.available ?? 0} available` : " · unpaid"}
+                            </SelectItem>
+                          );
+                        })}
+                      </SelectContent>
+                    </Select>
+                  )}
                 />
               </Field>
-              <Field label="To" htmlFor="to-date" error={errors.toDate?.message} required>
-                <Input id="to-date" type="date" min={fromDate || undefined} aria-invalid={!!errors.toDate} {...register("toDate")} />
-              </Field>
-            </div>
 
-            {halfDayAllowed ? (
-              <div className="rounded-md border border-border bg-subtle p-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <p className="text-xs font-medium">Half day</p>
-                    <p className="text-xs text-muted-foreground">
-                      Deducts 0.5 instead of a full day on the day you mark.
-                    </p>
-                  </div>
-                  <label className="flex items-center gap-2 text-xs">
-                    <Controller
-                      control={control}
-                      name="halfDayFirst"
-                      render={({ field }) => (
-                        <Switch
-                          checked={field.value}
-                          onCheckedChange={field.onChange}
-                          aria-label="First day is a half day"
-                        />
-                      )}
-                    />
-                    <span>{multiDay ? "First day" : "This day"}</span>
-                  </label>
-                  {multiDay && (
+              {type && (
+                <p className="-mt-1.5 text-xs text-muted-foreground">{type.description}</p>
+              )}
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="From" htmlFor="from-date" error={errors.fromDate?.message} required>
+                  <Input
+                    id="from-date"
+                    type="date"
+                    aria-invalid={!!errors.fromDate}
+                    {...register("fromDate", {
+                      onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
+                        // Keep the range valid while the user types.
+                        if (!toDate || toDate < e.target.value)
+                          setValue("toDate", e.target.value, { shouldDirty: true });
+                      },
+                    })}
+                  />
+                </Field>
+                <Field label="To" htmlFor="to-date" error={errors.toDate?.message} required>
+                  <Input id="to-date" type="date" min={fromDate || undefined} aria-invalid={!!errors.toDate} {...register("toDate")} />
+                </Field>
+              </div>
+
+              {halfDayAllowed ? (
+                <div className="rounded-md border border-border bg-subtle p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <p className="text-xs font-medium">Half day</p>
+                      <p className="text-xs text-muted-foreground">
+                        Deducts 0.5 instead of a full day on the day you mark.
+                      </p>
+                    </div>
                     <label className="flex items-center gap-2 text-xs">
                       <Controller
                         control={control}
-                        name="halfDaySecond"
+                        name="halfDayFirst"
                         render={({ field }) => (
                           <Switch
                             checked={field.value}
                             onCheckedChange={field.onChange}
-                            aria-label="Last day is a half day"
+                            aria-label="First day is a half day"
                           />
                         )}
                       />
-                      <span>Last day</span>
+                      <span>{multiDay ? "First day" : "This day"}</span>
                     </label>
+                    {multiDay && (
+                      <label className="flex items-center gap-2 text-xs">
+                        <Controller
+                          control={control}
+                          name="halfDaySecond"
+                          render={({ field }) => (
+                            <Switch
+                              checked={field.value}
+                              onCheckedChange={field.onChange}
+                              aria-label="Last day is a half day"
+                            />
+                          )}
+                        />
+                        <span>Last day</span>
+                      </label>
+                    )}
+                  </div>
+                  {(halfDayFirst || halfDaySecond) && (
+                    <div className="mt-2.5 border-t border-border pt-2.5">
+                      <Controller
+                        control={control}
+                        name="halfDaySession"
+                        render={({ field }) => (
+                          <RadioGroup
+                            value={field.value}
+                            onValueChange={field.onChange}
+                            className="flex flex-wrap gap-4"
+                            aria-label="Which half of the day"
+                          >
+                            {[
+                              { v: "first_half", l: "First half (09:30 – 13:30)" },
+                              { v: "second_half", l: "Second half (13:30 – 18:30)" },
+                            ].map((o) => (
+                              <label key={o.v} className="flex cursor-pointer items-center gap-2 text-xs">
+                                <RadioGroupItem value={o.v} id={`half-${o.v}`} />
+                                {o.l}
+                              </label>
+                            ))}
+                          </RadioGroup>
+                        )}
+                      />
+                    </div>
                   )}
                 </div>
-                {(halfDayFirst || halfDaySecond) && (
-                  <div className="mt-2.5 border-t border-border pt-2.5">
-                    <Controller
-                      control={control}
-                      name="halfDaySession"
-                      render={({ field }) => (
-                        <RadioGroup
-                          value={field.value}
-                          onValueChange={field.onChange}
-                          className="flex flex-wrap gap-4"
-                          aria-label="Which half of the day"
-                        >
-                          {[
-                            { v: "first_half", l: "First half (09:30 – 13:30)" },
-                            { v: "second_half", l: "Second half (13:30 – 18:30)" },
-                          ].map((o) => (
-                            <label key={o.v} className="flex cursor-pointer items-center gap-2 text-xs">
-                              <RadioGroupItem value={o.v} id={`half-${o.v}`} />
-                              {o.l}
-                            </label>
-                          ))}
-                        </RadioGroup>
-                      )}
-                    />
-                  </div>
+              ) : (
+                <Alert tone="info" icon={CalendarOff}>
+                  {type?.name} is counted in calendar days — weekends and holidays inside the range are
+                  included and half days are not available.
+                </Alert>
+              )}
+
+              {/* live deduction preview */}
+              <div
+                className={cn(
+                  "rounded-md border p-3",
+                  overdrawn ? "border-destructive/25 bg-destructive-soft" : "border-primary/25 bg-primary-soft",
+                )}
+                aria-live="polite"
+              >
+                <p
+                  className={cn(
+                    "text-sm font-semibold",
+                    overdrawn ? "text-destructive-fg" : "text-primary-soft-foreground",
+                  )}
+                >
+                  <span className="tnum">{days}</span> day{days === 1 ? "" : "s"} will be deducted
+                  {type?.tracksBalance && balance
+                    ? ` — ${Math.round((balance.available - days) * 100) / 100} of ${balance.available} ${type.code} would remain`
+                    : type && !type.paid
+                      ? " — unpaid, this reduces the month's payable days"
+                      : ""}
+                </p>
+                {skipped.length > 0 && (
+                  <ul className="mt-1.5 flex flex-col gap-0.5">
+                    {skipped.slice(0, 6).map((s) => (
+                      <li key={s.date} className="text-xs text-muted-foreground">
+                        {fmtDate(s.date)} — not deducted ({s.reason.kind === "weekend" ? s.reason.label : s.reason.label})
+                      </li>
+                    ))}
+                    {skipped.length > 6 && (
+                      <li className="text-xs text-muted-foreground">
+                        +{skipped.length - 6} more weekend or holiday days excluded
+                      </li>
+                    )}
+                  </ul>
+                )}
+                {!fromDate && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Pick a date range — weekends and gazetted holidays are excluded automatically.
+                  </p>
                 )}
               </div>
-            ) : (
-              <Alert tone="info" icon={CalendarOff}>
-                {type?.name} is counted in calendar days — weekends and holidays inside the range are
-                included and half days are not available.
-              </Alert>
-            )}
 
-            {/* live deduction preview */}
-            <div
-              className={cn(
-                "rounded-md border p-3",
-                overdrawn ? "border-destructive/25 bg-destructive-soft" : "border-primary/25 bg-primary-soft",
-              )}
-              aria-live="polite"
-            >
-              <p
-                className={cn(
-                  "text-sm font-semibold",
-                  overdrawn ? "text-destructive-fg" : "text-primary-soft-foreground",
-                )}
-              >
-                <span className="tnum">{days}</span> day{days === 1 ? "" : "s"} will be deducted
-                {type?.tracksBalance && balance
-                  ? ` — ${Math.round((balance.available - days) * 100) / 100} of ${balance.available} ${type.code} would remain`
-                  : type && !type.paid
-                    ? " — unpaid, this reduces the month's payable days"
-                    : ""}
-              </p>
-              {skipped.length > 0 && (
-                <ul className="mt-1.5 flex flex-col gap-0.5">
-                  {skipped.slice(0, 6).map((s) => (
-                    <li key={s.date} className="text-xs text-muted-foreground">
-                      {fmtDate(s.date)} — not deducted ({s.reason.kind === "weekend" ? s.reason.label : s.reason.label})
-                    </li>
-                  ))}
-                  {skipped.length > 6 && (
-                    <li className="text-xs text-muted-foreground">
-                      +{skipped.length - 6} more weekend or holiday days excluded
-                    </li>
-                  )}
-                </ul>
-              )}
-              {!fromDate && (
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Pick a date range — weekends and gazetted holidays are excluded automatically.
-                </p>
-              )}
-            </div>
-
-            {overdrawn && (
-              <Alert tone="danger" icon={TriangleAlert} title="Not enough balance">
-                You hold {balance?.available} day{balance?.available === 1 ? "" : "s"} of {type?.name}. The
-                shortfall of {Math.round((days - (balance?.available ?? 0)) * 100) / 100} day
-                {days - (balance?.available ?? 0) === 1 ? "" : "s"} will be booked as Loss of Pay.
-              </Alert>
-            )}
-
-            {shortNotice && (
-              <Alert tone="warning" icon={TriangleAlert} title="Short notice">
-                Policy asks for {MIN_NOTICE_DAYS} days of notice. Your manager will see this request flagged
-                as short notice.
-              </Alert>
-            )}
-
-            <Field
-              label="Reason"
-              htmlFor="reason"
-              error={errors.reason?.message}
-              required
-              hint={`${reason?.trim().length ?? 0} / 10 characters minimum`}
-            >
-              <Textarea
-                id="reason"
-                placeholder="e.g. Sister's wedding in Mysuru — travelling on the 14th"
-                aria-invalid={!!errors.reason}
-                {...register("reason")}
+              <ApplyLeaveAiHints
+                employeeCode={employeeCode}
+                country={country}
+                typeCode={typeCode}
+                fromDate={fromDate}
+                toDate={toDate}
+                onUseDates={(from, to) => {
+                  setValue("fromDate", from, { shouldDirty: true, shouldValidate: false });
+                  setValue("toDate", to, { shouldDirty: true, shouldValidate: false });
+                }}
               />
-            </Field>
 
-            <Field
-              label="Contact number while away"
-              htmlFor="contact"
-              error={errors.contactNumber?.message}
-              required
-            >
-              <Input id="contact" inputMode="tel" aria-invalid={!!errors.contactNumber} {...register("contactNumber")} />
-            </Field>
+              {overdrawn && (
+                <Alert tone="danger" icon={TriangleAlert} title="Not enough balance">
+                  You hold {balance?.available} day{balance?.available === 1 ? "" : "s"} of {type?.name}. The
+                  shortfall of {Math.round((days - (balance?.available ?? 0)) * 100) / 100} day
+                  {days - (balance?.available ?? 0) === 1 ? "" : "s"} will be booked as Loss of Pay.
+                </Alert>
+              )}
 
-            {needsDocument && (
+              {shortNotice && (
+                <Alert tone="warning" icon={TriangleAlert} title="Short notice">
+                  Policy asks for {MIN_NOTICE_DAYS} days of notice. Your manager will see this request flagged
+                  as short notice.
+                </Alert>
+              )}
+
               <Field
-                label="Supporting document"
-                error={errors.documentName?.message}
+                label="Reason"
+                htmlFor="reason"
+                error={errors.reason?.message}
                 required
-                hint={`Required above ${docThreshold} days for ${type?.name ?? "this leave type"}.`}
+                hint={`${reason?.trim().length ?? 0} / 10 characters minimum`}
               >
-                {documentName ? (
-                  <div className="flex items-center gap-2 rounded-md border border-border bg-subtle px-2.5 py-2">
-                    <Paperclip className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-                    <span className="min-w-0 flex-1 truncate text-xs">{documentName}</span>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-sm"
-                      aria-label={`Remove ${documentName}`}
-                      onClick={() => setValue("documentName", "", { shouldValidate: true })}
-                    >
-                      <X />
-                    </Button>
-                  </div>
-                ) : (
-                  <div
-                    role="button"
-                    tabIndex={0}
-                    aria-label="Attach a supporting document"
-                    onClick={() => fileRef.current?.click()}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        fileRef.current?.click();
-                      }
-                    }}
-                    onDragOver={(e) => {
-                      e.preventDefault();
-                      setDragging(true);
-                    }}
-                    onDragLeave={() => setDragging(false)}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      setDragging(false);
-                      const f = e.dataTransfer.files?.[0];
-                      attach(f?.name ?? "supporting-document.pdf");
-                    }}
-                    className={cn(
-                      "flex cursor-pointer flex-col items-center justify-center gap-1 rounded-md border border-dashed px-4 py-6 text-center transition-colors",
-                      dragging ? "border-primary bg-primary-soft" : "border-border hover:bg-muted",
-                      errors.documentName && "border-destructive",
-                    )}
-                  >
-                    <FileUp className="size-4 text-muted-foreground" aria-hidden />
-                    <p className="text-xs font-medium">Drop a file here, or click to browse</p>
-                    <p className="text-xs text-muted-foreground">
-                      Medical certificate, invitation or booking confirmation · PDF, JPG up to 5 MB
-                    </p>
-                    <input
-                      ref={fileRef}
-                      type="file"
-                      className="hidden"
-                      accept=".pdf,.jpg,.jpeg,.png"
-                      onChange={(e) => {
-                        const f = e.target.files?.[0];
-                        if (f) attach(f.name);
-                        e.target.value = "";
-                      }}
-                    />
-                  </div>
-                )}
+                <Textarea
+                  id="reason"
+                  placeholder="e.g. Sister's wedding in Mysuru — travelling on the 14th"
+                  aria-invalid={!!errors.reason}
+                  {...register("reason")}
+                />
               </Field>
-            )}
-          </DialogBody>
 
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" loading={isSubmitting}>
-              Submit for approval
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+              <Field
+                label="Contact number while away"
+                htmlFor="contact"
+                error={errors.contactNumber?.message}
+                required
+              >
+                <Input id="contact" inputMode="tel" aria-invalid={!!errors.contactNumber} {...register("contactNumber")} />
+              </Field>
+
+              {needsDocument && (
+                <Field
+                  label="Supporting document"
+                  error={errors.documentName?.message}
+                  required
+                  hint={`Required above ${docThreshold} days for ${type?.name ?? "this leave type"}.`}
+                >
+                  {documentName ? (
+                    <div className="flex items-center gap-2 rounded-md border border-border bg-subtle px-2.5 py-2">
+                      <Paperclip className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                      <span className="min-w-0 flex-1 truncate text-xs">{documentName}</span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={`Remove ${documentName}`}
+                        onClick={() => setValue("documentName", "", { shouldValidate: true, shouldDirty: true })}
+                      >
+                        <X />
+                      </Button>
+                    </div>
+                  ) : (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      aria-label="Attach a supporting document"
+                      onClick={() => fileRef.current?.click()}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          fileRef.current?.click();
+                        }
+                      }}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        setDragging(true);
+                      }}
+                      onDragLeave={() => setDragging(false)}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        setDragging(false);
+                        const f = e.dataTransfer.files?.[0];
+                        attach(f?.name ?? "supporting-document.pdf");
+                      }}
+                      className={cn(
+                        "flex cursor-pointer flex-col items-center justify-center gap-1 rounded-md border border-dashed px-4 py-6 text-center transition-colors",
+                        dragging ? "border-primary bg-primary-soft" : "border-border hover:bg-muted",
+                        errors.documentName && "border-destructive",
+                      )}
+                    >
+                      <FileUp className="size-4 text-muted-foreground" aria-hidden />
+                      <p className="text-xs font-medium">Drop a file here, or click to browse</p>
+                      <p className="text-xs text-muted-foreground">
+                        Medical certificate, invitation or booking confirmation · PDF, JPG up to 5 MB
+                      </p>
+                      <input
+                        ref={fileRef}
+                        type="file"
+                        className="hidden"
+                        accept=".pdf,.jpg,.jpeg,.png"
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          if (f) attach(f.name);
+                          e.target.value = "";
+                        }}
+                      />
+                    </div>
+                  )}
+                </Field>
+              )}
+            </DialogBody>
+
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={requestClose}>
+                Cancel
+              </Button>
+              <Button type="submit" loading={isSubmitting}>
+                Submit for approval
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+      {guard}
+    </>
   );
 }

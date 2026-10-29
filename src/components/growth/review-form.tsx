@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { AlertTriangle, Info, RotateCcw, Save, Send } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { fmtDate } from "@/lib/format";
@@ -19,6 +20,7 @@ import {
   type ReviewForm,
 } from "@/mock/growth";
 import { employeeByCode } from "@/mock/employees";
+import { DEMO_TODAY } from "@/mock/org";
 
 export type ReviewColumn = "self" | "manager" | "peer";
 
@@ -106,6 +108,87 @@ export function RatingScaleLegend() {
   );
 }
 
+/* ======================================================= unsaved guard */
+
+const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+
+/**
+ * Unsaved-changes guard for a full-page form. Reloading or closing the tab
+ * gets the browser's own prompt (`beforeunload`); an in-app link click — the
+ * sidebar, a breadcrumb, a name link — is intercepted before the router sees
+ * it and asks in a ConfirmDialog. `confirmLeave(fn)` routes an in-page switch
+ * (another employee, another cycle) through the same prompt. Render `guard`.
+ */
+export function useUnsavedChangesGuard(dirty: boolean) {
+  const router = useRouter();
+  const [pending, setPending] = React.useState<(() => void) | null>(null);
+  const bypass = React.useRef(false);
+
+  React.useEffect(() => {
+    if (!dirty) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => e.preventDefault();
+    const onClick = (e: MouseEvent) => {
+      if (bypass.current) {
+        bypass.current = false;
+        return;
+      }
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const a = e.target instanceof Element ? e.target.closest("a[href]") : null;
+      if (!(a instanceof HTMLAnchorElement) || a.target === "_blank" || a.hasAttribute("download")) return;
+      const url = new URL(a.href);
+      if (url.origin !== window.location.origin) return;
+      if (url.pathname === window.location.pathname && url.search === window.location.search) return;
+      /* Capture phase on window runs before React's root listeners, so the
+         Link never starts the navigation. */
+      e.preventDefault();
+      e.stopPropagation();
+      setPending(() => () => {
+        if (a.isConnected) {
+          bypass.current = true;
+          a.click();
+        } else {
+          router.push(url.pathname.slice(BASE_PATH.length) + url.search + url.hash);
+        }
+      });
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    window.addEventListener("click", onClick, true);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      window.removeEventListener("click", onClick, true);
+    };
+  }, [dirty, router]);
+
+  const confirmLeave = React.useCallback(
+    (proceed: () => void) => {
+      if (dirty) setPending(() => proceed);
+      else proceed();
+    },
+    [dirty],
+  );
+
+  const guard = (
+    <ConfirmDialog
+      open={pending !== null}
+      onOpenChange={(v) => {
+        if (!v) setPending(null);
+      }}
+      destructive
+      title="Leave without saving?"
+      description="This review form has ratings or comments that have not been saved. Leaving now discards them."
+      confirmLabel="Leave and discard"
+      cancelLabel="Keep editing"
+      onConfirm={() => {
+        const go = pending;
+        setPending(null);
+        go?.();
+      }}
+    />
+  );
+
+  return { confirmLeave, guard };
+}
+
 /* ================================================================== form */
 
 export function ReviewFormTable({
@@ -141,13 +224,8 @@ export function ReviewFormTable({
 
   React.useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
 
-  /* Unsaved-changes guard — a browser navigation away loses the draft. */
-  React.useEffect(() => {
-    if (!dirty) return;
-    const onBeforeUnload = (e: BeforeUnloadEvent) => e.preventDefault();
-    window.addEventListener("beforeunload", onBeforeUnload);
-    return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, [dirty]);
+  /* Unsaved-changes guard — a reload or an in-app link away asks first. */
+  const { guard: leaveGuard } = useUnsavedChangesGuard(dirty);
 
   const employee = employeeByCode(form.employeeCode);
   const manager = employeeByCode(form.managerCode);
@@ -213,9 +291,8 @@ export function ReviewFormTable({
       managerSummary: editable === "manager" ? summary : form.managerSummary,
       proposedRating: Math.round(overall("manager")),
       status: editable === "self" ? "manager_pending" : "completed",
-      submittedSelfOn: editable === "self" ? new Date().toISOString().slice(0, 10) : form.submittedSelfOn,
-      submittedManagerOn:
-        editable === "manager" ? new Date().toISOString().slice(0, 10) : form.submittedManagerOn,
+      submittedSelfOn: editable === "self" ? DEMO_TODAY : form.submittedSelfOn,
+      submittedManagerOn: editable === "manager" ? DEMO_TODAY : form.submittedManagerOn,
     };
     onSubmitted(next);
     mockAction(editable === "self" ? "Self review submitted" : "Manager review submitted", {
@@ -489,6 +566,7 @@ export function ReviewFormTable({
         confirmLabel="Discard changes"
         onConfirm={discard}
       />
+      {leaveGuard}
     </div>
   );
 }

@@ -50,6 +50,7 @@ import {
   SheetFooter,
   SheetHeader,
   SheetTitle,
+  useDiscardGuard,
 } from "@/components/ui/overlays";
 import { StatusBadge, TONE_DOT, statusDef } from "@/components/ui/status-badge";
 import { DataTable, MutedCell } from "@/components/data-table";
@@ -140,6 +141,8 @@ export default function AmendmentsPage() {
   const [detail, setDetail] = React.useState<Amendment | null>(null);
   const [cancelTarget, setCancelTarget] = React.useState<Amendment | null>(null);
   const [files, setFiles] = React.useState<AmendmentAttachment[]>([]);
+  /* The attachment list the dialog opened with — anything else is an unsaved change. */
+  const [baseFiles, setBaseFiles] = React.useState<AmendmentAttachment[]>(files);
   const [dragging, setDragging] = React.useState(false);
   const fileRef = React.useRef<HTMLInputElement>(null);
 
@@ -176,8 +179,10 @@ export default function AmendmentsPage() {
   }, [list]);
 
   const openNew = () => {
+    const none: AmendmentAttachment[] = [];
     setEditing(null);
-    setFiles([]);
+    setFiles(none);
+    setBaseFiles(none);
     form.reset({
       type: "missed_punch_out",
       date: DEMO_TODAY,
@@ -191,6 +196,7 @@ export default function AmendmentsPage() {
   const openEdit = (a: Amendment) => {
     setEditing(a);
     setFiles(a.attachments);
+    setBaseFiles(a.attachments);
     form.reset({
       type: a.type,
       date: a.date,
@@ -200,6 +206,15 @@ export default function AmendmentsPage() {
     });
     setOpen(true);
   };
+
+  const closeForm = React.useCallback(() => {
+    setOpen(false);
+    setEditing(null);
+  }, []);
+  const { requestClose, guard } = useDiscardGuard(
+    form.formState.isDirty || files !== baseFiles,
+    closeForm,
+  );
 
   const addFiles = (names: string[]) => {
     if (!names.length) return;
@@ -376,6 +391,7 @@ export default function AmendmentsPage() {
         id: "actions",
         header: "Actions",
         enableSorting: false,
+        enableHiding: false,
         cell: ({ row }) => {
           const a = row.original;
           return (
@@ -560,13 +576,7 @@ export default function AmendmentsPage() {
       </Section>
 
       {/* ------------------------------------------------- new / edit dialog */}
-      <Dialog
-        open={open}
-        onOpenChange={(v) => {
-          setOpen(v);
-          if (!v) setEditing(null);
-        }}
-      >
+      <Dialog open={open} onOpenChange={(v) => (v ? setOpen(true) : requestClose())}>
         <DialogContent size="lg">
           <DialogHeader>
             <DialogTitle>{editing ? `Edit ${editing.id}` : "New regularisation request"}</DialogTitle>
@@ -742,14 +752,7 @@ export default function AmendmentsPage() {
             </DialogBody>
 
             <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  setOpen(false);
-                  setEditing(null);
-                }}
-              >
+              <Button type="button" variant="outline" onClick={requestClose}>
                 Cancel
               </Button>
               <Button type="submit">{editing ? "Resubmit request" : "Submit request"}</Button>
@@ -757,6 +760,7 @@ export default function AmendmentsPage() {
           </form>
         </DialogContent>
       </Dialog>
+      {guard}
 
       {/* --------------------------------------------------- timeline drawer */}
       <Sheet open={!!detail} onOpenChange={(v) => !v && setDetail(null)}>

@@ -28,9 +28,18 @@ export const viewport: Viewport = {
   ],
 };
 
+/* Runs before first paint: when this tab restored a non-default persona, hide
+   the page body until AppStateProvider has swapped it in, so the static HR
+   Admin HTML never flashes (or flashes "Access denied") on a reload. The
+   provider clears the flag; the timeout is a safety net if hydration fails. */
+const PERSONA_BOOT = `try{var r=sessionStorage.getItem("hrms.persona");if(r&&r!=="hr_admin"){var d=document.documentElement;d.setAttribute("data-persona-restoring","");setTimeout(function(){d.removeAttribute("data-persona-restoring")},2000)}}catch(e){}`;
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en-IN" suppressHydrationWarning className={inter.variable}>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: PERSONA_BOOT }} />
+      </head>
       <body>
         <ThemeProvider attribute="class" defaultTheme="light" enableSystem disableTransitionOnChange>
           <AppStateProvider>

@@ -25,6 +25,8 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { FilterSelect } from "@/components/ui/overlays";
 import { ChartSkeleton, PageBody, PageHeader, Section, useFakeLoad } from "@/components/shell/page";
 import { PersonCell } from "@/components/people/person-cell";
+import { useApp } from "@/components/app-state";
+import { OrgSpanHint, SpanFlagChip, spanFlag } from "@/components/ai/embed/org-span-hint";
 
 /* ============================================================================
    /org-chart — the real 4-level hierarchy for all 340 employees.
@@ -160,8 +162,11 @@ function OrgNode({
         {(directs > 0 || employee.status !== "active") && (
           <div className="flex items-center justify-between gap-1.5 border-t border-border px-2 py-1">
             {directs > 0 ? (
-              <span className="tnum truncate text-[10px] text-muted-foreground">
-                {directs} direct{total !== directs ? ` · ${total} total` : ""}
+              <span className="flex min-w-0 items-center gap-1">
+                <span className="tnum truncate text-[10px] text-muted-foreground">
+                  {directs} direct{total !== directs ? ` · ${total} total` : ""}
+                </span>
+                {spanFlag(directs) && <SpanFlagChip flag={spanFlag(directs)!} directs={directs} />}
               </span>
             ) : (
               <span className="text-[10px] text-muted-foreground">Individual contributor</span>
@@ -231,6 +236,8 @@ function OrgChart() {
   const [natural, setNatural] = React.useState({ w: 0, h: 0 });
 
   const root = index.byCode.get(ROOT_CODE);
+  const { can } = useApp();
+  const canSeeHint = can("people.org_chart", "V");
 
   /* Expand the chain to a person and park the viewport on them. */
   const revealPerson = React.useCallback((code: string) => {
@@ -385,6 +392,8 @@ function OrgChart() {
           </div>
         ))}
       </dl>
+
+      {canSeeHint && !loading && <OrgSpanHint department={department} onShow={revealPerson} />}
 
       <Section bodyClassName="p-0">
         <div className="flex flex-wrap items-center gap-1.5 border-b border-border px-3 py-2">

@@ -7,10 +7,11 @@ import { ShieldAlert } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { menuKeyForPath } from "@/lib/nav";
 import { MENU_META, type Action, type MenuKey } from "@/lib/rbac";
-import { useApp } from "@/components/app-state";
+import { mockAction, useApp } from "@/components/app-state";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Hint, Skeleton } from "@/components/ui/primitives";
+import { ConfirmDialog } from "@/components/ui/overlays";
 
 /* --------------------------------------------------------- page scaffold */
 
@@ -111,6 +112,7 @@ export function RouteGuard({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { can, persona } = useApp();
   const key = menuKeyForPath(pathname);
+  const [requesting, setRequesting] = React.useState(false);
 
   if (!key || can(key, "V")) return <>{children}</>;
 
@@ -143,11 +145,30 @@ export function RouteGuard({ children }: { children: React.ReactNode }) {
           <Button variant="outline" size="sm" asChild>
             <Link href="/dashboard">Back to dashboard</Link>
           </Button>
-          <Button size="sm" asChild>
-            <Link href="/admin/roles">View the role matrix</Link>
-          </Button>
+          {can("admin.roles") ? (
+            <Button size="sm" asChild>
+              <Link href="/admin/roles">View the role matrix</Link>
+            </Button>
+          ) : (
+            <Button size="sm" onClick={() => setRequesting(true)}>
+              Request access
+            </Button>
+          )}
         </div>
       </Card>
+      <ConfirmDialog
+        open={requesting}
+        onOpenChange={setRequesting}
+        title={`Request access to ${meta?.label ?? key}`}
+        description="Your tenant owner reviews the request. Access is granted per role, so they may add the grant to your role or give you a time-boxed override."
+        confirmLabel="Send request"
+        comment={{ label: "Why do you need access?", placeholder: "e.g. Covering for the payroll team during month-end close." }}
+        onConfirm={(reason) =>
+          mockAction("Access request sent", {
+            description: `${meta?.label ?? key} · View — "${reason}". You will be notified when it is decided.`,
+          })
+        }
+      />
     </div>
   );
 }

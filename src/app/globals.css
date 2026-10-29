@@ -323,6 +323,10 @@
     border: 1px solid var(--border);
     border-radius: var(--radius);
   }
+  /* set by the persona boot script in app/layout.tsx until the stored persona is restored */
+  [data-persona-restoring] body {
+    visibility: hidden;
+  }
   /* texture fill for the CVD / print / forced-colors case */
   .viz-texture-45 {
     background-image: repeating-linear-gradient(

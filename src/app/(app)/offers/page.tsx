@@ -8,6 +8,7 @@ import {
   Ban,
   BellRing,
   Check,
+  ExternalLink,
   FileText,
   Handshake,
   Percent,
@@ -19,6 +20,7 @@ import {
 import { cn } from "@/lib/utils";
 import { fmtDate, inr, pct } from "@/lib/format";
 import { DEMO_TODAY } from "@/mock/org";
+import { PUBLIC_OFFER, PUBLIC_OFFER_CANDIDATE } from "@/mock/lifecycle-public";
 import {
   HIRING_BRANCHES,
   HIRING_DEPARTMENTS,
@@ -31,7 +33,7 @@ import {
   type Offer,
   type OfferStatus,
 } from "@/mock/hiring";
-import { mockAction } from "@/components/app-state";
+import { mockAction, useApp } from "@/components/app-state";
 import { DataTable } from "@/components/data-table";
 import { StatRow, StatTile } from "@/components/charts/stat-tile";
 import { Gated, PageBody, PageHeader, TableSkeleton, useFakeLoad } from "@/components/shell/page";
@@ -62,6 +64,8 @@ const isLive = (o: Offer) => o.status === "approved" || o.status === "pending";
 
 export default function OffersPage() {
   const loading = useFakeLoad();
+  const { can } = useApp();
+  const canOnboard = can("lifecycle.onboarding");
 
   /* Offers are cloned into local state — every mutation on this screen is
      optimistic and in-memory, and nothing survives a refresh. By design. */
@@ -349,14 +353,26 @@ export default function OffersPage() {
         header: "Status",
         accessorFn: (o) => OFFER_STATUS_LABEL[o.status],
         cell: ({ row }) => (
-          <StatusBadge
-            status={row.original.status}
-            label={OFFER_STATUS_LABEL[row.original.status]}
-          />
+          <span className="flex items-center gap-2 whitespace-nowrap">
+            <StatusBadge
+              status={row.original.status}
+              label={OFFER_STATUS_LABEL[row.original.status]}
+            />
+            {/* An accepted offer hands over to onboarding. */}
+            {row.original.status === "hired" && canOnboard && (
+              <Link
+                href="/onboarding"
+                onClick={(e) => e.stopPropagation()}
+                className="text-xs font-medium text-primary hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                Onboarding
+              </Link>
+            )}
+          </span>
         ),
       },
     ],
-    [],
+    [canOnboard],
   );
 
   /* ------------------------------------------------------------------ view */
@@ -378,6 +394,15 @@ export default function OffersPage() {
             <Button variant="outline" size="sm" asChild>
               <Link href="/candidates">Candidate pipeline</Link>
             </Button>
+            <Hint
+              text={`The public offer page as ${PUBLIC_OFFER_CANDIDATE.name} sees ${PUBLIC_OFFER.id} — accept, e-sign or decline.`}
+            >
+              <Button variant="outline" size="sm" asChild>
+                <Link href="/offer" target="_blank" rel="noopener">
+                  <ExternalLink /> Candidate&apos;s view
+                </Link>
+              </Button>
+            </Hint>
             <Gated menuKey="hiring.offers" action="C">
               <Button
                 size="sm"

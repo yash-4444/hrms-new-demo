@@ -1,5 +1,5 @@
 import { addDays, differenceInDays, format, parseISO } from "date-fns";
-import { mulberry32, pick, randInt } from "@/lib/utils";
+import { mulberry32, pick, randInt, seededShuffle } from "@/lib/utils";
 import { DEMO_TODAY, GRADES, branchById, deptById } from "./org";
 import { EMPLOYEES, employeeByCode } from "./employees";
 
@@ -1025,7 +1025,7 @@ export const CANDIDATES: Candidate[] = (() => {
 
     const notice = pick(rng, us ? [0, 14, 14, 30] : [0, 15, 30, 30, 45, 60, 90]);
     const skillPool = CANDIDATE_SKILLS[req.departmentId] ?? CANDIDATE_SKILLS.ENG;
-    const skills = [...skillPool].sort(() => rng() - 0.5).slice(0, randInt(rng, 3, 5));
+    const skills = seededShuffle(rng, skillPool).slice(0, randInt(rng, 3, 5));
     const titles = CURRENT_TITLES[req.departmentId] ?? CURRENT_TITLES.ENG;
     const summaries = SUMMARY_TEMPLATES[req.departmentId] ?? SUMMARY_TEMPLATES.ENG;
 

@@ -162,6 +162,7 @@ export function ConfirmDialog({
   cancelLabel = "Cancel",
   destructive,
   onConfirm,
+  comment,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
@@ -170,24 +171,54 @@ export function ConfirmDialog({
   confirmLabel?: string;
   cancelLabel?: string;
   destructive?: boolean;
-  onConfirm: () => void;
+  /** Receives the comment when `comment` is set, otherwise "". */
+  onConfirm: (comment: string) => void;
+  /** Ask for a comment — required by default, as a recorded human decision needs a reason. */
+  comment?: { label?: string; placeholder?: string; required?: boolean };
 }) {
+  const [text, setText] = React.useState("");
+  const required = comment ? comment.required !== false : false;
+  const blocked = required && text.trim().length < 3;
+  const close = (v: boolean) => {
+    if (!v) setText("");
+    onOpenChange(v);
+  };
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={close}>
       <DialogContent size="sm">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           {description && <DialogDescription>{description}</DialogDescription>}
         </DialogHeader>
+        {comment && (
+          <DialogBody>
+            <label htmlFor="confirm-comment" className="mb-1 block text-xs font-medium">
+              {comment.label ?? "Comment"}
+              {required && <span className="text-destructive"> *</span>}
+            </label>
+            <textarea
+              id="confirm-comment"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder={comment.placeholder ?? "Recorded on the audit trail and shared with the requester."}
+              aria-required={required}
+              className="flex min-h-[72px] w-full rounded-md border border-input bg-card px-2.5 py-1.5 text-sm shadow-xs placeholder:text-muted-foreground focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/25"
+            />
+            {required && (
+              <p className="mt-1 text-[11px] text-muted-foreground">A reason of at least 3 characters is required.</p>
+            )}
+          </DialogBody>
+        )}
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" onClick={() => close(false)}>
             {cancelLabel}
           </Button>
           <Button
             variant={destructive ? "destructive" : "default"}
+            disabled={blocked}
             onClick={() => {
-              onConfirm();
-              onOpenChange(false);
+              onConfirm(text.trim());
+              close(false);
             }}
           >
             {confirmLabel}
@@ -196,6 +227,35 @@ export function ConfirmDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+/**
+ * Dirty-form guard for dialogs and sheets. Route every close through
+ * `requestClose`; when the form is dirty it asks before discarding.
+ *
+ *   const { requestClose, guard } = useDiscardGuard(form.formState.isDirty, () => setOpen(false));
+ *   <Dialog open={open} onOpenChange={(v) => (v ? setOpen(true) : requestClose())}>…</Dialog>
+ *   {guard}
+ */
+export function useDiscardGuard(dirty: boolean, close: () => void) {
+  const [asking, setAsking] = React.useState(false);
+  const requestClose = React.useCallback(() => {
+    if (dirty) setAsking(true);
+    else close();
+  }, [dirty, close]);
+  const guard = (
+    <ConfirmDialog
+      open={asking}
+      onOpenChange={setAsking}
+      title="Discard unsaved changes?"
+      description="You have edits that have not been saved. Closing now will lose them."
+      confirmLabel="Discard changes"
+      cancelLabel="Keep editing"
+      destructive
+      onConfirm={close}
+    />
+  );
+  return { requestClose, guard };
 }
 
 /* ----------------------------------------------------------- DropdownMenu */

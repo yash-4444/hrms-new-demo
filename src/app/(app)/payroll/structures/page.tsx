@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import type { ColumnDef } from "@tanstack/react-table";
 import {
   BadgeIndianRupee,
   Check,
@@ -18,12 +19,14 @@ import {
   ratesForGrade,
   structureForGrade,
   type ComponentRates,
+  type SalaryStructure,
 } from "@/mock/payroll";
 import { mockAction } from "@/components/app-state";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Alert, Badge, Input, Label } from "@/components/ui/primitives";
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/overlays";
+import { DataTable, MutedCell, NumCell } from "@/components/data-table";
 import { DonutChart } from "@/components/charts";
 import { StatRow, StatTile } from "@/components/charts/stat-tile";
 import {
@@ -89,6 +92,49 @@ export default function StructuresPage() {
 
   const inBand = ctc >= structure.ctcBand.min && ctc <= structure.ctcBand.max;
 
+  const columns = React.useMemo<ColumnDef<SalaryStructure, unknown>[]>(
+    () => [
+      {
+        accessorKey: "gradeId",
+        header: "Grade",
+        cell: ({ row }) => (
+          <span className="flex items-center gap-1.5">
+            <span className="font-semibold">{row.original.gradeId}</span>
+            {row.original.gradeId === gradeId && <Badge variant="soft">In builder</Badge>}
+          </span>
+        ),
+      },
+      {
+        id: "level",
+        header: "Level",
+        accessorFn: (s) => GRADES.find((g) => g.id === s.gradeId)?.label.split(" · ")[1] ?? "",
+        cell: ({ getValue }) => <MutedCell>{getValue() as string}</MutedCell>,
+      },
+      { accessorKey: "name", header: "Template", cell: ({ row }) => <span className="font-medium">{row.original.name}</span> },
+      {
+        id: "band",
+        header: "CTC band",
+        accessorFn: (s) => s.ctcBand.min,
+        cell: ({ row }) => (
+          <span className="tnum">
+            {inrCompact(row.original.ctcBand.min)} – {inrCompact(row.original.ctcBand.max)}
+          </span>
+        ),
+      },
+      {
+        accessorKey: "employeeCount",
+        header: "Employees",
+        cell: ({ row }) => <NumCell>{num(row.original.employeeCount)}</NumCell>,
+      },
+      {
+        accessorKey: "effectiveFrom",
+        header: "Effective from",
+        cell: ({ row }) => <MutedCell>{fmtDate(row.original.effectiveFrom)}</MutedCell>,
+      },
+    ],
+    [gradeId],
+  );
+
   if (loading) {
     return (
       <PageBody>
@@ -151,38 +197,23 @@ export default function StructuresPage() {
       </StatRow>
 
       {/* grade picker */}
-      <Section title="Grade templates" description="Pick a grade to load its template into the builder.">
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
-          {SALARY_STRUCTURES.map((s) => {
-            const g = GRADES.find((x) => x.id === s.gradeId)!;
-            const active = s.gradeId === gradeId;
-            return (
-              <button
-                key={s.id}
-                type="button"
-                onClick={() => selectGrade(s.gradeId)}
-                aria-pressed={active}
-                className={cn(
-                  "rounded-md border p-2.5 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring",
-                  active
-                    ? "border-primary/40 bg-primary-soft"
-                    : "border-border bg-card hover:bg-muted",
-                )}
-              >
-                <span className="flex items-center justify-between gap-1">
-                  <span className="text-xs font-semibold">{s.gradeId}</span>
-                  {active && <Check className="size-3 text-primary" aria-hidden />}
-                </span>
-                <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
-                  {g.label.split(" · ")[1]}
-                </span>
-                <span className="tnum mt-1 block text-[10px] text-muted-foreground">
-                  {num(s.employeeCount)} people
-                </span>
-              </button>
-            );
-          })}
-        </div>
+      <Section
+        title="Grade templates"
+        description="Click a grade to load its template into the builder."
+        bodyClassName="p-4"
+      >
+        <DataTable
+          columns={columns}
+          data={SALARY_STRUCTURES}
+          getRowId={(s) => s.id}
+          searchKeys={["gradeId", "name"]}
+          searchPlaceholder="Search grade or template…"
+          onRowClick={(s) => selectGrade(s.gradeId)}
+          exportName="salary-structures"
+          emptyIcon={FileSpreadsheet}
+          emptyTitle="No salary structures"
+          pageSize={10}
+        />
       </Section>
 
       <div className="grid gap-3 lg:grid-cols-[minmax(0,380px)_1fr]">

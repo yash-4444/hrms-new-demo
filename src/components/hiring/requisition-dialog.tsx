@@ -29,7 +29,9 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
+  useDiscardGuard,
 } from "@/components/ui/overlays";
+import { AiJdDraftBar, WriteJdButton, jdTextFor } from "@/components/ai/embed/hiring-jd";
 
 /* ============================================================================
    Raise requisition — RHF + zod, inline errors through <Field>.
@@ -95,6 +97,8 @@ const schema = z
       .string()
       .trim()
       .min(20, "Give the approver a real reason — at least 20 characters"),
+    /** Optional JD draft — becomes the job posting copy once the requisition is approved. */
+    jobDescription: z.string(),
   })
   .superRefine((v, ctx) => {
     const min = Number(digits(v.budgetMin));
@@ -119,7 +123,8 @@ export function RaiseRequisitionDialog({
   open: boolean;
   onOpenChange: (v: boolean) => void;
   nextCode: string;
-  onCreate: (req: Requisition) => void;
+  /** `extras.jobDescription` carries the (possibly AI-drafted) JD when one was written. */
+  onCreate: (req: Requisition, extras?: { jobDescription?: string }) => void;
 }) {
   const {
     control,
@@ -127,7 +132,10 @@ export function RaiseRequisitionDialog({
     handleSubmit,
     reset,
     watch,
-    formState: { errors, isSubmitting },
+    getValues,
+    setValue,
+    setFocus,
+    formState: { errors, isSubmitting, isDirty },
   } = useForm<RequisitionValues>({
     resolver: zodResolver(schema),
     defaultValues: {
@@ -143,13 +151,37 @@ export function RaiseRequisitionDialog({
       budgetMin: "",
       budgetMax: "",
       justification: "",
+      jobDescription: "",
     },
   });
 
+  /* AI JD draft: remembers what the field held so Dismiss can restore it. */
+  const [jdDraft, setJdDraft] = React.useState<{ prev: string; variant: number } | null>(null);
+  const writeJd = (variant: number) => {
+    const v = getValues();
+    setValue(
+      "jobDescription",
+      jdTextFor(
+        {
+          role: v.role,
+          departmentId: v.departmentId,
+          branchId: v.branchId,
+          gradeId: v.gradeId,
+          justification: v.justification,
+        },
+        variant,
+      ),
+      { shouldDirty: true },
+    );
+    setJdDraft((d) => ({ prev: d ? d.prev : v.jobDescription, variant }));
+  };
+
   const close = () => {
     reset();
+    setJdDraft(null);
     onOpenChange(false);
   };
+  const { requestClose, guard } = useDiscardGuard(isDirty, close);
 
   const justification = watch("justification") ?? "";
   const bMin = Number(digits(watch("budgetMin") ?? ""));
@@ -178,271 +210,305 @@ export function RaiseRequisitionDialog({
       priority: v.priority as Requisition["priority"],
       replacementFor: null,
       justification: v.justification.trim(),
-    });
+    }, v.jobDescription.trim() ? { jobDescription: v.jobDescription.trim() } : undefined);
     close();
   };
 
   return (
-    <Dialog open={open} onOpenChange={(v) => (v ? onOpenChange(true) : close())}>
-      <DialogContent size="lg">
-        <DialogHeader>
-          <DialogTitle>Raise a requisition</DialogTitle>
-          <DialogDescription>
-            Creates {nextCode} in <span className="font-medium text-foreground">Pending</span>{" "}
-            approval. It reaches the careers site only once the hiring manager, HR and Finance
-            have signed off.
-          </DialogDescription>
-        </DialogHeader>
+    <>
+      <Dialog open={open} onOpenChange={(v) => (v ? onOpenChange(true) : requestClose())}>
+        <DialogContent size="lg">
+          <DialogHeader>
+            <DialogTitle>Raise a requisition</DialogTitle>
+            <DialogDescription>
+              Creates {nextCode} in <span className="font-medium text-foreground">Pending</span>{" "}
+              approval. It reaches the careers site only once the hiring manager, HR and Finance
+              have signed off.
+            </DialogDescription>
+          </DialogHeader>
 
-        <form onSubmit={handleSubmit(onSubmit)}>
-          <DialogBody>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field
-                label="Role title"
-                htmlFor="rq-role"
-                required
-                error={errors.role?.message}
-                className="sm:col-span-2"
-              >
-                <Input
-                  id="rq-role"
-                  placeholder="Senior Backend Engineer"
-                  aria-invalid={!!errors.role}
-                  {...register("role")}
-                />
-              </Field>
+          <form onSubmit={handleSubmit(onSubmit)}>
+            <DialogBody>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <Field
+                  label="Role title"
+                  htmlFor="rq-role"
+                  required
+                  error={errors.role?.message}
+                  className="sm:col-span-2"
+                >
+                  <Input
+                    id="rq-role"
+                    placeholder="Senior Backend Engineer"
+                    aria-invalid={!!errors.role}
+                    {...register("role")}
+                  />
+                </Field>
 
-              <Field label="Department" required error={errors.departmentId?.message}>
-                <Controller
-                  control={control}
-                  name="departmentId"
-                  render={({ field }) => (
-                    <Select value={field.value} onValueChange={field.onChange}>
-                      <SelectTrigger aria-label="Department">
-                        <span className="truncate">
-                          {deptById(field.value)?.name ?? field.value}
-                        </span>
-                      </SelectTrigger>
-                      <SelectContent>
-                        {HIRING_DEPARTMENTS.map((d) => (
-                          <SelectItem key={d.value} value={d.value}>
-                            {d.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                <Field label="Department" required error={errors.departmentId?.message}>
+                  <Controller
+                    control={control}
+                    name="departmentId"
+                    render={({ field }) => (
+                      <Select value={field.value} onValueChange={field.onChange}>
+                        <SelectTrigger aria-label="Department">
+                          <span className="truncate">
+                            {deptById(field.value)?.name ?? field.value}
+                          </span>
+                        </SelectTrigger>
+                        <SelectContent>
+                          {HIRING_DEPARTMENTS.map((d) => (
+                            <SelectItem key={d.value} value={d.value}>
+                              {d.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  />
+                </Field>
+
+                <Field label="Branch" required error={errors.branchId?.message}>
+                  <Controller
+                    control={control}
+                    name="branchId"
+                    render={({ field }) => (
+                      <Select value={field.value} onValueChange={field.onChange}>
+                        <SelectTrigger aria-label="Branch">
+                          <span className="truncate">
+                            {branchById(field.value)?.name ?? field.value}
+                          </span>
+                        </SelectTrigger>
+                        <SelectContent>
+                          {HIRING_BRANCHES.map((b) => (
+                            <SelectItem key={b.value} value={b.value}>
+                              {branchById(b.value)?.name ?? b.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  />
+                </Field>
+
+                <Field label="Grade band" required error={errors.gradeId?.message}>
+                  <Controller
+                    control={control}
+                    name="gradeId"
+                    render={({ field }) => (
+                      <Select value={field.value} onValueChange={field.onChange}>
+                        <SelectTrigger aria-label="Grade band">
+                          <span className="truncate">
+                            {GRADES.find((g) => g.id === field.value)?.label ?? field.value}
+                          </span>
+                        </SelectTrigger>
+                        <SelectContent>
+                          {GRADES.map((g) => (
+                            <SelectItem key={g.id} value={g.id}>
+                              {g.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  />
+                </Field>
+
+                <Field
+                  label="Headcount"
+                  htmlFor="rq-headcount"
+                  required
+                  error={errors.headcount?.message}
+                  hint="Positions to fill against this requisition"
+                >
+                  <Input
+                    id="rq-headcount"
+                    inputMode="numeric"
+                    aria-invalid={!!errors.headcount}
+                    {...register("headcount")}
+                  />
+                </Field>
+
+                <Field label="Hiring manager" required error={errors.hiringManagerCode?.message}>
+                  <Controller
+                    control={control}
+                    name="hiringManagerCode"
+                    render={({ field }) => (
+                      <Select value={field.value} onValueChange={field.onChange}>
+                        <SelectTrigger aria-label="Hiring manager">
+                          <span className="truncate">
+                            {employeeByCode(field.value)?.name ?? field.value}
+                          </span>
+                        </SelectTrigger>
+                        <SelectContent>
+                          {MANAGER_OPTIONS.map((m) => (
+                            <SelectItem key={m.value} value={m.value}>
+                              {m.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  />
+                </Field>
+
+                <Field label="Recruiter" required error={errors.recruiterCode?.message}>
+                  <Controller
+                    control={control}
+                    name="recruiterCode"
+                    render={({ field }) => (
+                      <Select value={field.value} onValueChange={field.onChange}>
+                        <SelectTrigger aria-label="Recruiter">
+                          <span className="truncate">
+                            {employeeByCode(field.value)?.name ?? field.value}
+                          </span>
+                        </SelectTrigger>
+                        <SelectContent>
+                          {RECRUITERS.map((r) => (
+                            <SelectItem key={r.code} value={r.code}>
+                              {r.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  />
+                </Field>
+
+                <Field label="Priority" required error={errors.priority?.message}>
+                  <Controller
+                    control={control}
+                    name="priority"
+                    render={({ field }) => (
+                      <Select value={field.value} onValueChange={field.onChange}>
+                        <SelectTrigger aria-label="Priority">
+                          <span className="truncate">{field.value}</span>
+                        </SelectTrigger>
+                        <SelectContent>
+                          {PRIORITIES.map((p) => (
+                            <SelectItem key={p} value={p}>
+                              {p}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  />
+                </Field>
+
+                <Field
+                  label="Target close date"
+                  htmlFor="rq-target"
+                  required
+                  error={errors.targetCloseDate?.message}
+                >
+                  <Input
+                    id="rq-target"
+                    type="date"
+                    min={DEMO_TODAY}
+                    aria-invalid={!!errors.targetCloseDate}
+                    {...register("targetCloseDate")}
+                  />
+                </Field>
+
+                <Field
+                  label="Budget CTC — minimum"
+                  htmlFor="rq-min"
+                  required
+                  error={errors.budgetMin?.message}
+                  hint={Number.isFinite(bMin) && bMin > 0 ? inr(bMin, { decimals: false }) : "Annual, in rupees"}
+                >
+                  <Input
+                    id="rq-min"
+                    inputMode="numeric"
+                    placeholder="1800000"
+                    aria-invalid={!!errors.budgetMin}
+                    {...register("budgetMin")}
+                  />
+                </Field>
+
+                <Field
+                  label="Budget CTC — maximum"
+                  htmlFor="rq-max"
+                  required
+                  error={errors.budgetMax?.message}
+                  hint={Number.isFinite(bMax) && bMax > 0 ? inr(bMax, { decimals: false }) : "Annual, in rupees"}
+                >
+                  <Input
+                    id="rq-max"
+                    inputMode="numeric"
+                    placeholder="2400000"
+                    aria-invalid={!!errors.budgetMax}
+                    {...register("budgetMax")}
+                  />
+                </Field>
+
+                <Field
+                  label="Justification"
+                  htmlFor="rq-why"
+                  required
+                  error={errors.justification?.message}
+                  hint={
+                    <span className="tnum">
+                      {justification.trim().length} / 20 characters minimum
+                    </span>
+                  }
+                  className="sm:col-span-2"
+                >
+                  <Textarea
+                    id="rq-why"
+                    rows={4}
+                    placeholder="What breaks if this role is not filled? Name the workload, the risk and the date it bites."
+                    aria-invalid={!!errors.justification}
+                    {...register("justification")}
+                  />
+                </Field>
+
+                <Field
+                  label="Job description (optional)"
+                  htmlFor="rq-jd"
+                  hint="Becomes the job posting copy once the requisition is approved."
+                  className="sm:col-span-2"
+                >
+                  {jdDraft ? (
+                    <AiJdDraftBar
+                      onAccept={() => setJdDraft(null)}
+                      onEdit={() => setFocus("jobDescription")}
+                      onRegenerate={() => writeJd(jdDraft.variant + 1)}
+                      onDismiss={() => {
+                        setValue("jobDescription", jdDraft.prev, { shouldDirty: true });
+                        setJdDraft(null);
+                      }}
+                    />
+                  ) : (
+                    <WriteJdButton
+                      className="w-fit"
+                      onClick={() => writeJd(0)}
+                    />
                   )}
-                />
-              </Field>
+                  <Textarea
+                    id="rq-jd"
+                    rows={jdDraft ? 12 : 3}
+                    placeholder="Write the JD yourself, or let AI draft it from the role, department, branch and grade above."
+                    className={jdDraft ? "border-violet-300/70 dark:border-violet-400/30" : undefined}
+                    {...register("jobDescription")}
+                  />
+                </Field>
+              </div>
+            </DialogBody>
 
-              <Field label="Branch" required error={errors.branchId?.message}>
-                <Controller
-                  control={control}
-                  name="branchId"
-                  render={({ field }) => (
-                    <Select value={field.value} onValueChange={field.onChange}>
-                      <SelectTrigger aria-label="Branch">
-                        <span className="truncate">
-                          {branchById(field.value)?.name ?? field.value}
-                        </span>
-                      </SelectTrigger>
-                      <SelectContent>
-                        {HIRING_BRANCHES.map((b) => (
-                          <SelectItem key={b.value} value={b.value}>
-                            {branchById(b.value)?.name ?? b.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  )}
-                />
-              </Field>
-
-              <Field label="Grade band" required error={errors.gradeId?.message}>
-                <Controller
-                  control={control}
-                  name="gradeId"
-                  render={({ field }) => (
-                    <Select value={field.value} onValueChange={field.onChange}>
-                      <SelectTrigger aria-label="Grade band">
-                        <span className="truncate">
-                          {GRADES.find((g) => g.id === field.value)?.label ?? field.value}
-                        </span>
-                      </SelectTrigger>
-                      <SelectContent>
-                        {GRADES.map((g) => (
-                          <SelectItem key={g.id} value={g.id}>
-                            {g.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  )}
-                />
-              </Field>
-
-              <Field
-                label="Headcount"
-                htmlFor="rq-headcount"
-                required
-                error={errors.headcount?.message}
-                hint="Positions to fill against this requisition"
-              >
-                <Input
-                  id="rq-headcount"
-                  inputMode="numeric"
-                  aria-invalid={!!errors.headcount}
-                  {...register("headcount")}
-                />
-              </Field>
-
-              <Field label="Hiring manager" required error={errors.hiringManagerCode?.message}>
-                <Controller
-                  control={control}
-                  name="hiringManagerCode"
-                  render={({ field }) => (
-                    <Select value={field.value} onValueChange={field.onChange}>
-                      <SelectTrigger aria-label="Hiring manager">
-                        <span className="truncate">
-                          {employeeByCode(field.value)?.name ?? field.value}
-                        </span>
-                      </SelectTrigger>
-                      <SelectContent>
-                        {MANAGER_OPTIONS.map((m) => (
-                          <SelectItem key={m.value} value={m.value}>
-                            {m.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  )}
-                />
-              </Field>
-
-              <Field label="Recruiter" required error={errors.recruiterCode?.message}>
-                <Controller
-                  control={control}
-                  name="recruiterCode"
-                  render={({ field }) => (
-                    <Select value={field.value} onValueChange={field.onChange}>
-                      <SelectTrigger aria-label="Recruiter">
-                        <span className="truncate">
-                          {employeeByCode(field.value)?.name ?? field.value}
-                        </span>
-                      </SelectTrigger>
-                      <SelectContent>
-                        {RECRUITERS.map((r) => (
-                          <SelectItem key={r.code} value={r.code}>
-                            {r.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  )}
-                />
-              </Field>
-
-              <Field label="Priority" required error={errors.priority?.message}>
-                <Controller
-                  control={control}
-                  name="priority"
-                  render={({ field }) => (
-                    <Select value={field.value} onValueChange={field.onChange}>
-                      <SelectTrigger aria-label="Priority">
-                        <span className="truncate">{field.value}</span>
-                      </SelectTrigger>
-                      <SelectContent>
-                        {PRIORITIES.map((p) => (
-                          <SelectItem key={p} value={p}>
-                            {p}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  )}
-                />
-              </Field>
-
-              <Field
-                label="Target close date"
-                htmlFor="rq-target"
-                required
-                error={errors.targetCloseDate?.message}
-              >
-                <Input
-                  id="rq-target"
-                  type="date"
-                  min={DEMO_TODAY}
-                  aria-invalid={!!errors.targetCloseDate}
-                  {...register("targetCloseDate")}
-                />
-              </Field>
-
-              <Field
-                label="Budget CTC — minimum"
-                htmlFor="rq-min"
-                required
-                error={errors.budgetMin?.message}
-                hint={Number.isFinite(bMin) && bMin > 0 ? inr(bMin, { decimals: false }) : "Annual, in rupees"}
-              >
-                <Input
-                  id="rq-min"
-                  inputMode="numeric"
-                  placeholder="1800000"
-                  aria-invalid={!!errors.budgetMin}
-                  {...register("budgetMin")}
-                />
-              </Field>
-
-              <Field
-                label="Budget CTC — maximum"
-                htmlFor="rq-max"
-                required
-                error={errors.budgetMax?.message}
-                hint={Number.isFinite(bMax) && bMax > 0 ? inr(bMax, { decimals: false }) : "Annual, in rupees"}
-              >
-                <Input
-                  id="rq-max"
-                  inputMode="numeric"
-                  placeholder="2400000"
-                  aria-invalid={!!errors.budgetMax}
-                  {...register("budgetMax")}
-                />
-              </Field>
-
-              <Field
-                label="Justification"
-                htmlFor="rq-why"
-                required
-                error={errors.justification?.message}
-                hint={
-                  <span className="tnum">
-                    {justification.trim().length} / 20 characters minimum
-                  </span>
-                }
-                className="sm:col-span-2"
-              >
-                <Textarea
-                  id="rq-why"
-                  rows={4}
-                  placeholder="What breaks if this role is not filled? Name the workload, the risk and the date it bites."
-                  aria-invalid={!!errors.justification}
-                  {...register("justification")}
-                />
-              </Field>
-            </div>
-          </DialogBody>
-
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={close}>
-              Cancel
-            </Button>
-            <Button type="submit" loading={isSubmitting}>
-              Raise requisition
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={requestClose}>
+                Cancel
+              </Button>
+              <Button type="submit" loading={isSubmitting}>
+                Raise requisition
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+      {guard}
+    </>
   );
 }

@@ -1,15 +1,37 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { KeyRound, Lock, Mail, ShieldCheck } from "lucide-react";
+import { BookOpen, KeyRound, Lock, Mail, MessageSquareText, ScanText, ShieldCheck, TrendingDown } from "lucide-react";
 import { toast } from "sonner";
-import { PERSONAS, type RoleId } from "@/lib/rbac";
-import { TENANT } from "@/mock/org";
+import { PERSONAS, PERSONA_GROUPS, personaById, type RoleId } from "@/lib/rbac";
+import { BRANCHES, DEPARTMENTS, TENANT } from "@/mock/org";
+import { EMPLOYEES } from "@/mock/employees";
 import { useApp } from "@/components/app-state";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { AI_TONE, AiBadge } from "@/components/ai/ai-ui";
 import { Avatar, Field, Input, Separator } from "@/components/ui/primitives";
+
+/* The pitch figures are counted from the fixtures, never typed in. */
+const STAFFED_BRANCHES = new Set(EMPLOYEES.map((e) => e.branchId));
+const COUNTRY_COUNT = new Set(
+  BRANCHES.filter((b) => STAFFED_BRANCHES.has(b.id) && b.country).map((b) => b.country),
+).size;
+const PITCH_STATS: [string, string][] = [
+  [String(EMPLOYEES.length), "employees"],
+  [String(COUNTRY_COUNT), COUNTRY_COUNT === 1 ? "country" : "countries"],
+  [String(DEPARTMENTS.length), "departments"],
+];
+
+/* What the assistant does in the product — every item is a working screen in this build. */
+const AI_HIGHLIGHTS = [
+  { icon: MessageSquareText, title: "HR Copilot", body: "Ask about leave, pay or your team in plain words; it proposes, you confirm." },
+  { icon: BookOpen, title: "Policy answers with sources", body: "Replies quote the policy section and page they came from." },
+  { icon: TrendingDown, title: "Attrition insights", body: "Explainable risk drivers for HR and managers — never an automated decision." },
+  { icon: ScanText, title: "Receipt reading", body: "Merchant, date and amount filled from a receipt photo, highlighted for review." },
+] as const;
 
 export default function LoginPage() {
   const router = useRouter();
@@ -18,12 +40,14 @@ export default function LoginPage() {
   const [password, setPassword] = React.useState("demo1234");
   const [busy, setBusy] = React.useState(false);
 
+  /* A typed sign-in goes through two-step verification, as it would for real;
+     the persona shortcuts below skip straight to the dashboard mid-demo. */
   const signIn = (roleId?: RoleId) => {
     setBusy(true);
     const match = roleId ?? PERSONAS.find((p) => p.email === email.trim().toLowerCase())?.id ?? "hr_admin";
     setTimeout(() => {
       setRole(match);
-      router.push("/dashboard");
+      router.push(roleId ? "/dashboard" : "/mfa");
     }, 450);
   };
 
@@ -46,17 +70,32 @@ export default function LoginPage() {
             the workplace desk — under one permission model, one design system and one audit trail.
           </p>
           <dl className="mt-6 grid grid-cols-3 gap-4">
-            {[
-              ["340", "employees"],
-              ["3", "countries"],
-              ["9", "departments"],
-            ].map(([v, l]) => (
+            {PITCH_STATS.map(([v, l]) => (
               <div key={l}>
                 <dt className="tnum text-lg font-semibold">{v}</dt>
                 <dd className="text-xs text-muted-foreground">{l}</dd>
               </div>
             ))}
           </dl>
+          <div className="mt-8 border-t border-border pt-5">
+            <div className="flex items-center gap-2">
+              <AiBadge label="AI-assisted" />
+              <p className="text-xs text-muted-foreground">Built in, permission-aware, human in the loop.</p>
+            </div>
+            <ul className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3">
+              {AI_HIGHLIGHTS.map((h) => (
+                <li key={h.title} className="flex items-start gap-2">
+                  <span className={`mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md border ${AI_TONE.chip}`} aria-hidden>
+                    <h.icon className="size-3.5" />
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block text-xs font-medium">{h.title}</span>
+                    <span className="block text-[11px] leading-snug text-muted-foreground">{h.body}</span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
         <p className="text-[10px] text-muted-foreground">
           {TENANT.legalName} · CIN {TENANT.cin}
@@ -116,13 +155,9 @@ export default function LoginPage() {
                 <input type="checkbox" defaultChecked className="size-3.5 accent-[var(--primary)]" />
                 Keep me signed in
               </label>
-              <button
-                type="button"
-                onClick={() => toast.info("Password reset link sent", { description: "Demo only — no email leaves this build." })}
-                className="text-xs text-primary hover:underline"
-              >
+              <Link href="/forgot-password" className="text-xs text-primary hover:underline">
                 Forgot password?
-              </button>
+              </Link>
             </div>
 
             <Button type="submit" loading={busy} className="mt-1 w-full">
@@ -156,8 +191,8 @@ export default function LoginPage() {
             <p className="mt-0.5 text-[11px] text-muted-foreground">
               Pick one to jump straight in. You can switch at any time from the top bar.
             </p>
-            <ul className="mt-2 flex flex-col gap-0.5">
-              {PERSONAS.map((p) => (
+            <ul className="mt-2 grid grid-cols-1 gap-0.5 sm:grid-cols-2">
+              {PERSONA_GROUPS.flatMap((g) => g.roles).map(personaById).map((p) => (
                 <li key={p.id}>
                   <button
                     type="button"
@@ -165,6 +200,7 @@ export default function LoginPage() {
                       setEmail(p.email);
                       signIn(p.id);
                     }}
+                    title={p.description}
                     className="flex w-full items-center gap-2 rounded-md px-1.5 py-1.5 text-left transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <Avatar name={p.name} size={22} />

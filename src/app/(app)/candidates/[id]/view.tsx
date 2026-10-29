@@ -17,6 +17,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Download,
+  ExternalLink,
   FileText,
   Gauge,
   Inbox,
@@ -31,6 +32,7 @@ import { cn } from "@/lib/utils";
 import { fmtDate, fmtDateTime, inr } from "@/lib/format";
 import { DEMO_NOW, DEMO_TODAY, branchById } from "@/mock/org";
 import { EMPLOYEES, employeeByCode } from "@/mock/employees";
+import { PREJOIN_CANDIDATE } from "@/mock/lifecycle-public";
 import {
   INTERVIEW_MODES,
   INTERVIEW_ROUNDS,
@@ -58,6 +60,7 @@ import {
   Badge,
   EmptyState,
   Field,
+  Hint,
   Input,
   Separator,
   Skeleton,
@@ -93,6 +96,13 @@ import { StatRow, StatTile } from "@/components/charts/stat-tile";
 import { CardsSkeleton, Gated, PageBody, PageHeader, Section, useFakeLoad } from "@/components/shell/page";
 import { ResumePreview } from "@/components/hiring/resume-preview";
 import { ScorecardPanel } from "@/components/hiring/scorecard-panel";
+import {
+  AiInterviewQuestions,
+  AiMatchCard,
+  AiScorecardSummary,
+  PARSED_FIELD,
+  ParsedFromResume,
+} from "@/components/ai/embed/hiring-ai-ui";
 
 /* ============================================================================
    Candidate profile — the recruiter's single screen for one person:
@@ -430,6 +440,23 @@ function CandidateDetail({ candidate }: { candidate: Candidate }) {
               </Button>
             </Gated>
 
+            {/* A hired candidate completes their joining formalities on the public portal. */}
+            {stage === "hired" && (
+              <Hint
+                text={
+                  candidate.id === PREJOIN_CANDIDATE.id
+                    ? `The portal ${candidate.name.split(" ")[0]} uses before day one — personal details, bank, nominees, documents.`
+                    : `The demo portal is seeded for ${PREJOIN_CANDIDATE.name}; every hire gets the same flow.`
+                }
+              >
+                <Button variant="outline" size="sm" asChild>
+                  <Link href="/pre-joining" target="_blank" rel="noopener">
+                    <ExternalLink /> Pre-joining portal
+                  </Link>
+                </Button>
+              </Hint>
+            )}
+
             <Button
               variant="outline"
               size="sm"
@@ -531,11 +558,13 @@ function CandidateDetail({ candidate }: { candidate: Candidate }) {
                         <Badge variant="muted">Referred by {candidate.referredBy}</Badge>
                       )}
                     </div>
-                    <p className="mt-0.5 text-xs text-muted-foreground">
+                    <div className={cn("mt-1.5 w-fit", PARSED_FIELD)}>
+                    <p className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
                       {candidate.currentTitle} at {candidate.currentCompany} ·{" "}
                       {candidate.location}
+                      <ParsedFromResume />
                     </p>
-                    <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
+                    <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1">
                       <a
                         href={`mailto:${candidate.email}`}
                         className="flex items-center gap-1.5 text-xs text-primary hover:underline"
@@ -550,6 +579,7 @@ function CandidateDetail({ candidate }: { candidate: Candidate }) {
                         <Phone className="size-3.5" aria-hidden />
                         {candidate.phone}
                       </a>
+                    </div>
                     </div>
                   </div>
                   <ProgressRing
@@ -582,7 +612,15 @@ function CandidateDetail({ candidate }: { candidate: Candidate }) {
                     }
                     numeric
                   />
-                  <Fact label="Experience" value={`${candidate.experienceYears} years`} numeric />
+                  <Fact
+                    label="Experience"
+                    value={
+                      <span className="inline-flex items-center gap-1.5">
+                        {candidate.experienceYears} years <ParsedFromResume />
+                      </span>
+                    }
+                    numeric
+                  />
                   <Fact label="Applied on" value={fmtDate(candidate.appliedDate)} />
                   <Fact
                     label="In this stage"
@@ -601,8 +639,10 @@ function CandidateDetail({ candidate }: { candidate: Candidate }) {
                   </p>
                 </div>
 
-                <div className="mt-3">
-                  <p className="text-xs font-medium text-muted-foreground">Skills</p>
+                <div className={cn("mt-3", PARSED_FIELD)}>
+                  <p className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                    Skills <ParsedFromResume />
+                  </p>
                   <ul className="mt-1.5 flex flex-wrap gap-1.5">
                     {candidate.skills.map((s) => (
                       <li key={s}>
@@ -619,6 +659,13 @@ function CandidateDetail({ candidate }: { candidate: Candidate }) {
                   </div>
                 )}
               </Card>
+
+              {can("hiring.candidates", "V") && (
+                <>
+                  <AiMatchCard candidate={candidate} />
+                  <AiScorecardSummary interviews={interviews} />
+                </>
+              )}
 
               {offer && (
                 <Section
@@ -768,12 +815,20 @@ function CandidateDetail({ candidate }: { candidate: Candidate }) {
               </Gated>
             }
           >
-            <ScorecardPanel
-              interviews={interviews}
-              candidateName={candidate.name}
-              onSchedule={() => setScheduleOpen(true)}
-            />
+            <div className="flex flex-col gap-3">
+              <AiScorecardSummary interviews={interviews} />
+              <ScorecardPanel
+                interviews={interviews}
+                candidateName={candidate.name}
+                onSchedule={() => setScheduleOpen(true)}
+              />
+            </div>
           </Section>
+          {stage !== "rejected" && stage !== "hired" && (
+            <div className="mt-4">
+              <AiInterviewQuestions candidate={candidate} />
+            </div>
+          )}
         </TabsContent>
 
         {/* ------------------------------------------------------- timeline */}

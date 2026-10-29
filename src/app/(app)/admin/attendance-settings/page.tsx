@@ -40,7 +40,7 @@ import {
   Section,
   useFakeLoad,
 } from "@/components/shell/page";
-import { ATTENDANCE_SETTINGS, type CountryAttendanceSettings } from "@/mock/attendance";
+import { ATTENDANCE_CODES, ATTENDANCE_SETTINGS, type CountryAttendanceSettings } from "@/mock/attendance";
 import { TENANT } from "@/mock/org";
 
 const clock = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use a 24-hour HH:MM time.");
@@ -271,7 +271,7 @@ export default function AttendanceSettingsPage() {
                 mockAction("Rule simulation queued", {
                   tone: "info",
                   description:
-                    "Replays the last 30 days against the current bands for all 106 employees with punch data.",
+                    `Replays the last 30 days against the current bands for all ${ATTENDANCE_CODES.length} employees with punch data.`,
                 })
               }
             >

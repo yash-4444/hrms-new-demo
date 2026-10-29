@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import type { ColumnDef } from "@tanstack/react-table";
 import {
   Ban,
@@ -96,17 +97,43 @@ function nextReqCode(rows: Requisition[]) {
   return `REQ-2026-${String(max + 1).padStart(3, "0")}`;
 }
 
+/** Only a value the filter actually offers survives a deep link; anything else is "all". */
+const pickOption = (value: string | null, options: { value: string }[]) =>
+  value && options.some((o) => o.value === value) ? value : "all";
+
 export default function RequisitionsPage() {
+  return (
+    <React.Suspense fallback={<TableSkeleton rows={10} />}>
+      <RequisitionsList />
+    </React.Suspense>
+  );
+}
+
+function RequisitionsList() {
   const loading = useFakeLoad();
+  const searchParams = useSearchParams();
+  const spKey = searchParams.toString();
 
   const [rows, setRows] = React.useState<Requisition[]>(() =>
     REQUISITIONS.map((r) => ({ ...r })),
   );
-  const [dept, setDept] = React.useState("all");
-  const [branch, setBranch] = React.useState("all");
-  const [approval, setApproval] = React.useState("all");
-  const [status, setStatus] = React.useState("all");
-  const [ageingOnly, setAgeingOnly] = React.useState(false);
+  const [dept, setDept] = React.useState(() => pickOption(searchParams.get("dept"), DEPT_OPTIONS));
+  const [branch, setBranch] = React.useState(() => pickOption(searchParams.get("branch"), BRANCH_OPTIONS));
+  const [approval, setApproval] = React.useState(() => pickOption(searchParams.get("approval"), APPROVAL_OPTIONS));
+  const [status, setStatus] = React.useState(() => pickOption(searchParams.get("status"), STATUS_OPTIONS));
+  const [ageingOnly, setAgeingOnly] = React.useState(() => searchParams.get("ageing") === "1");
+
+  /* A KPI tile elsewhere (the dashboard) drills in with a query string — re-seed the filters. */
+  const [seenKey, setSeenKey] = React.useState(spKey);
+  if (seenKey !== spKey) {
+    const p = new URLSearchParams(spKey);
+    setSeenKey(spKey);
+    setDept(pickOption(p.get("dept"), DEPT_OPTIONS));
+    setBranch(pickOption(p.get("branch"), BRANCH_OPTIONS));
+    setApproval(pickOption(p.get("approval"), APPROVAL_OPTIONS));
+    setStatus(pickOption(p.get("status"), STATUS_OPTIONS));
+    setAgeingOnly(p.get("ageing") === "1");
+  }
 
   const [raiseOpen, setRaiseOpen] = React.useState(false);
   const [detail, setDetail] = React.useState<Requisition | null>(null);
@@ -227,13 +254,13 @@ export default function RequisitionsPage() {
     });
   };
 
-  const createReq = (req: Requisition) => {
+  const createReq = (req: Requisition, extras?: { jobDescription?: string }) => {
     setRows((prev) => [req, ...prev]);
     clearFilters();
     mockAction("Requisition raised", {
       description: `${req.code} · ${req.role} — sent to ${
         employeeByCode(req.hiringManagerCode)?.name ?? req.hiringManagerCode
-      } for approval.`,
+      } for approval.${extras?.jobDescription ? " The JD draft is attached and becomes the job posting once approved." : ""}`,
     });
   };
 

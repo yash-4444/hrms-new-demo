@@ -1,22 +1,25 @@
 "use client";
 
 import * as React from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { Command } from "cmdk";
 import {
   ArrowRight,
   CalendarPlus,
   Clock,
   Moon,
+  Sparkles,
   Sun,
   UserRoundCog,
 } from "lucide-react";
 import { useTheme } from "next-themes";
-import { ALL_NAV_ITEMS } from "@/lib/nav";
+import { ALL_NAV_ITEMS, menuKeyForPath, navItemVisible } from "@/lib/nav";
 import { PERSONAS } from "@/lib/rbac";
 import { EMPLOYEES } from "@/mock/employees";
 import { deptName } from "@/mock/org";
 import { useApp, mockAction } from "@/components/app-state";
+import { AI_TONE } from "@/components/ai/ai-ui";
+import { useCopilot } from "@/components/ai/copilot-panel";
 import { Avatar, Kbd } from "@/components/ui/primitives";
 import { Dialog, DialogContent } from "@/components/ui/overlays";
 
@@ -43,8 +46,22 @@ function score(text: string, q: string) {
 export function CommandPalette() {
   const { commandOpen, setCommandOpen, can, setRole, punchedIn, punchIn, punchOut } = useApp();
   const router = useRouter();
+  const pathname = usePathname();
+  const routeKey = menuKeyForPath(pathname);
+  const canExportView = routeKey ? can(routeKey, "X") : false;
   const { setTheme, theme } = useTheme();
   const [query, setQuery] = React.useState("");
+  const copilot = useCopilot();
+  const question = query.trim();
+  const canAsk = can("ai.copilot", "V") && question.length > 0;
+  /* A sentence or a question reads as something to ask, so it leads the list. */
+  const askFirst = canAsk && (/\s/.test(question) || question.endsWith("?"));
+
+  const askCopilot = () => {
+    setCommandOpen(false);
+    if (copilot) copilot.ask(question);
+    else router.push(`/ai/ask?q=${encodeURIComponent(question)}`);
+  };
 
   React.useEffect(() => {
     if (!commandOpen) setQuery("");
@@ -57,7 +74,7 @@ export function CommandPalette() {
 
   const screens = React.useMemo(
     () =>
-      ALL_NAV_ITEMS.filter((i) => can(i.menuKey, "V"))
+      ALL_NAV_ITEMS.filter((i) => navItemVisible(i, can))
         .map((i) => ({ ...i, s: score(i.label, query) }))
         .filter((i) => i.s > 0)
         .sort((a, b) => b.s - a.s)
@@ -85,7 +102,8 @@ export function CommandPalette() {
           label: punchedIn ? "Punch out" : "Punch in",
           icon: Clock,
           run: () => {
-            punchedIn ? punchOut() : punchIn();
+            if (punchedIn) punchOut();
+            else punchIn();
             setCommandOpen(false);
           },
         },
@@ -104,21 +122,25 @@ export function CommandPalette() {
             setCommandOpen(false);
           },
         },
-        {
-          id: "export",
-          label: "Export current view",
-          icon: ArrowRight,
-          run: () => {
-            mockAction("Export queued", { description: "The file is not written to disk in the demo." });
-            setCommandOpen(false);
-          },
-        },
+        ...(canExportView
+          ? [
+              {
+                id: "export",
+                label: "Export current view",
+                icon: ArrowRight,
+                run: () => {
+                  mockAction("Export queued", { description: "The file is not written to disk in the demo." });
+                  setCommandOpen(false);
+                },
+              },
+            ]
+          : []),
       ]
         .map((a) => ({ ...a, s: score(a.label, query) }))
         .filter((a) => a.s > 0)
         .sort((a, b) => b.s - a.s),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [query, punchedIn, theme],
+    [query, punchedIn, theme, canExportView],
   );
 
   const personas = React.useMemo(
@@ -148,6 +170,8 @@ export function CommandPalette() {
             <Command.Empty className="px-3 py-8 text-center text-xs text-muted-foreground">
               Nothing matches “{query}”. Try an employee name, a code like STL-0142, or a screen.
             </Command.Empty>
+
+            {askFirst && <AskGroup question={question} onAsk={askCopilot} />}
 
             {screens.length > 0 && (
               <Command.Group heading="Screens" className="mb-1 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1 [&_[cmdk-group-heading]]:text-[10px] [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wide [&_[cmdk-group-heading]]:text-muted-foreground">
@@ -202,6 +226,8 @@ export function CommandPalette() {
               </Command.Group>
             )}
 
+            {canAsk && !askFirst && <AskGroup question={question} onAsk={askCopilot} />}
+
             {personas.length > 0 && (
               <Command.Group heading="Switch persona" className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1 [&_[cmdk-group-heading]]:text-[10px] [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wide [&_[cmdk-group-heading]]:text-muted-foreground">
                 {personas.map(({ p }) => (
@@ -231,11 +257,29 @@ export function CommandPalette() {
               <Kbd>↵</Kbd> open
             </span>
             <span className="ml-auto flex items-center gap-1">
-              <Kbd>⌥1</Kbd>–<Kbd>⌥6</Kbd> switch persona
+              <Kbd>⌥1</Kbd>–<Kbd>⌥0</Kbd> switch persona
             </span>
           </div>
         </Command>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** "Ask AI Copilot: <query>" — hands the typed text to the Copilot panel. */
+function AskGroup({ question, onAsk }: { question: string; onAsk: () => void }) {
+  return (
+    <Command.Group heading="AI Copilot" className="mb-1 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1 [&_[cmdk-group-heading]]:text-[10px] [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wide [&_[cmdk-group-heading]]:text-muted-foreground">
+      <Command.Item
+        value="ai-ask"
+        onSelect={onAsk}
+        className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-xs data-[selected=true]:bg-violet-50 dark:data-[selected=true]:bg-violet-500/15"
+      >
+        <Sparkles className={`size-3.5 ${AI_TONE.icon}`} aria-hidden />
+        <span className={`shrink-0 font-medium ${AI_TONE.text}`}>Ask AI Copilot:</span>
+        <span className="truncate">{question}</span>
+        <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">answers use only data you can see</span>
+      </Command.Item>
+    </Command.Group>
   );
 }

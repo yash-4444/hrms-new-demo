@@ -38,6 +38,7 @@ import {
   Section,
   useFakeLoad,
 } from "@/components/shell/page";
+import { PayrollPlainWords } from "@/components/ai/embed/payroll-plain-words";
 
 /* ============================================================================
    The money shot.
@@ -153,6 +154,8 @@ export default function PayslipBreakdownPage() {
           {run.label} run from being locked.
         </Alert>
       )}
+
+      <PayrollPlainWords runId={runId} employeeCode={employeeCode} />
 
       {/* ------------------------------------------------- payslip header */}
       <Card className="overflow-hidden">

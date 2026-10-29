@@ -6,12 +6,13 @@ import { useParams } from "next/navigation";
 import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { addDays, differenceInMonths, format, parseISO } from "date-fns";
+import { differenceInMonths, parseISO } from "date-fns";
 import {
   AlertTriangle,
   BadgeCheck,
   Building2,
   Download,
+  FileText,
   FileUp,
   GitFork,
   IndianRupee,
@@ -23,6 +24,7 @@ import {
   MoreHorizontal,
   Network,
   Pencil,
+  ScrollText,
   Star,
   Target,
   TrendingUp,
@@ -63,6 +65,7 @@ import {
   type LifecycleKind,
 } from "@/mock/people-extras";
 import { mockAction, useApp } from "@/components/app-state";
+import { TalentSnapshotCard } from "@/components/ai/embed/profile-talent-snapshot";
 import { BarCompareChart, DonutChart, ProgressRing, TrendLineChart } from "@/components/charts";
 import { StatRow, StatTile } from "@/components/charts/stat-tile";
 import { DataTable } from "@/components/data-table";
@@ -123,8 +126,9 @@ import type { ColumnDef } from "@tanstack/react-table";
    DOM at all when the viewer lacks the grant, and because `can()` is read from
    useApp() during render, switching persona in the top bar flips the tab live.
 
-   The profile is held in local state so edits and the exit action optimistically
-   change what is on screen. Nothing persists past a refresh — by design.
+   The profile is held in local state so edits optimistically
+   change what is on screen (exit and lifecycle events hand off to /separations and
+   /employees/lifecycle). Nothing persists past a refresh — by design.
    ========================================================================== */
 
 const TODAY = parseISO(DEMO_TODAY);
@@ -310,25 +314,10 @@ function ProfileHeader({
   employee: Employee;
   onChange: React.Dispatch<React.SetStateAction<Employee>>;
 }) {
+  const { can } = useApp();
   const [editOpen, setEditOpen] = React.useState(false);
-  const [exitOpen, setExitOpen] = React.useState(false);
   const branch = branchById(employee.branchId);
   const grade = gradeById(employee.gradeId);
-  const firstName = employee.name.split(" ")[0];
-
-  const initiateExit = () => {
-    const lastWorkingDay = format(addDays(TODAY, 60), "yyyy-MM-dd");
-    onChange((prev) => ({
-      ...prev,
-      status: "notice",
-      exitDate: lastWorkingDay,
-      exitReason: prev.exitReason ?? "Better opportunity",
-    }));
-    mockAction("Exit workflow started", {
-      tone: "warning",
-      description: `${employee.name} (${employee.code}) moved to Notice Period. Last working day ${fmtDate(lastWorkingDay)}. Clearance tasks issued to IT, Finance and the reporting manager.`,
-    });
-  };
 
   return (
     <>
@@ -422,13 +411,40 @@ function ProfileHeader({
                   <Download /> Export profile
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  destructive
-                  disabled={employee.status === "notice" || employee.status === "exited"}
-                  onSelect={() => setExitOpen(true)}
-                >
-                  <LogOut /> Initiate exit
-                </DropdownMenuItem>
+                <Gated menuKey="people.lifecycle" action="C">
+                  <DropdownMenuItem asChild>
+                    <Link href={`/employees/lifecycle?employee=${employee.code}`}>
+                      <GitFork /> Record lifecycle event
+                    </Link>
+                  </DropdownMenuItem>
+                </Gated>
+                {can("people.documents") && (
+                  <DropdownMenuItem asChild>
+                    <Link href="/employees/documents">
+                      <FileText /> Documents
+                    </Link>
+                  </DropdownMenuItem>
+                )}
+                {can("people.letters") && (
+                  <DropdownMenuItem asChild>
+                    <Link href="/letters">
+                      <ScrollText /> Letters
+                    </Link>
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuSeparator />
+                {/* The separation workflow (notice, clearance, F&F) lives on /separations. */}
+                <Gated menuKey="lifecycle.separations" action="C">
+                  <DropdownMenuItem
+                    destructive
+                    asChild
+                    disabled={employee.status === "notice" || employee.status === "exited"}
+                  >
+                    <Link href="/separations">
+                      <LogOut /> Initiate exit
+                    </Link>
+                  </DropdownMenuItem>
+                </Gated>
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -440,16 +456,6 @@ function ProfileHeader({
         open={editOpen}
         onOpenChange={setEditOpen}
         onSave={onChange}
-      />
-
-      <ConfirmDialog
-        open={exitOpen}
-        onOpenChange={setExitOpen}
-        destructive
-        title={`Initiate exit for ${employee.name}?`}
-        description={`This starts the exit workflow: a 60-day notice period is calculated from today, the clearance checklist is issued to IT, Finance and the reporting manager, and ${firstName} is flagged on the next pay run. The record is not deleted.`}
-        confirmLabel="Initiate exit"
-        onConfirm={initiateExit}
       />
     </>
   );
@@ -716,6 +722,8 @@ function OverviewTab({ employee }: { employee: Employee }) {
 
   return (
     <div className="flex flex-col gap-4">
+      {/* Renders nothing unless the viewer may see it (never the employee themself). */}
+      <TalentSnapshotCard employee={employee} />
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Section title="Personal details" description="Identity and contact record on file.">
           <DetailList>

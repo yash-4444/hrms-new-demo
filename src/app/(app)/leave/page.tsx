@@ -243,6 +243,7 @@ function MyLeaveScreen() {
         id: "actions",
         header: "Actions",
         enableSorting: false,
+        enableHiding: false,
         cell: ({ row }) => {
           const a = row.original;
           return (

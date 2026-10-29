@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import Link from "next/link";
+import type { ColumnDef } from "@tanstack/react-table";
 import {
   BadgeIndianRupee,
   Calculator,
@@ -10,18 +10,22 @@ import {
   Printer,
   Wallet,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
-import { fmtDate, inr, inrCompact, num } from "@/lib/format";
+import { fmtDate, inr, inrCompact } from "@/lib/format";
 import { TENANT } from "@/mock/org";
-import { amountInWords, payslipFor, payslipsFor } from "@/mock/payroll";
+import { amountInWords, payslipFor, payslipsFor, type PayslipListItem } from "@/mock/payroll";
 import { mockAction, useApp } from "@/components/app-state";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar, Badge, EmptyState, Separator, Skeleton } from "@/components/ui/primitives";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { DataTable, MutedCell, NumCell } from "@/components/data-table";
 import { BarCompareChart } from "@/components/charts";
 import { StatRow, StatTile } from "@/components/charts/stat-tile";
 import { PageBody, PageHeader, Section, useFakeLoad } from "@/components/shell/page";
+import { PayslipExplainSheet } from "./explain-sheet";
+import { PayslipExplainButton } from "@/components/ai/embed/payslip-explain-button";
+
+const money = (n: number) => inr(n, { decimals: false });
 
 export default function PayslipsPage() {
   const loading = useFakeLoad();
@@ -29,6 +33,7 @@ export default function PayslipsPage() {
 
   const list = React.useMemo(() => payslipsFor(persona.employeeId), [persona.employeeId]);
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  const [explaining, setExplaining] = React.useState(false);
 
   /* Derived during render rather than reset in an effect: when the persona
      changes, the held id no longer matches any period in the new list, so the
@@ -48,12 +53,54 @@ export default function PayslipsPage() {
     };
   }, [list]);
 
+  const columns = React.useMemo<ColumnDef<PayslipListItem, unknown>[]>(
+    () => [
+      {
+        accessorKey: "label",
+        header: "Month",
+        cell: ({ row }) => (
+          <span className="flex items-center gap-1.5 font-medium">
+            {row.original.label}
+            {row.original.periodId === selected?.periodId && <Badge variant="soft">Viewing</Badge>}
+          </span>
+        ),
+      },
+      {
+        accessorKey: "payDate",
+        header: "Paid on",
+        cell: ({ row }) => <MutedCell>{fmtDate(row.original.payDate)}</MutedCell>,
+      },
+      {
+        accessorKey: "lopDays",
+        header: "LOP days",
+        cell: ({ row }) => <NumCell>{row.original.lopDays || "—"}</NumCell>,
+      },
+      { accessorKey: "gross", header: "Gross", cell: ({ row }) => <NumCell>{money(row.original.gross)}</NumCell> },
+      {
+        accessorKey: "deductions",
+        header: "Deductions",
+        cell: ({ row }) => <NumCell>{money(row.original.deductions)}</NumCell>,
+      },
+      {
+        accessorKey: "net",
+        header: "Net pay",
+        cell: ({ row }) => <NumCell className="font-semibold">{money(row.original.net)}</NumCell>,
+      },
+      {
+        accessorKey: "status",
+        header: "Status",
+        cell: ({ row }) => <StatusBadge status={row.original.status} />,
+      },
+    ],
+    [selected?.periodId],
+  );
+
   if (loading) {
     return (
       <PageBody>
         <PageHeader title="My payslips" description="Loading your pay history…" />
-        <div className="grid gap-3 lg:grid-cols-[minmax(0,320px)_1fr]">
-          <Skeleton className="h-[420px]" />
+        <div className="flex flex-col gap-3">
+          <Skeleton className="h-[280px]" />
           <Skeleton className="h-[420px]" />
         </div>
       </PageBody>
@@ -79,17 +126,26 @@ export default function PayslipsPage() {
         title="My payslips"
         description={`${persona.name} · ${persona.employeeId} · ${persona.title} · ${persona.branch}`}
         actions={
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() =>
-              mockAction("Salary certificate requested", {
-                description: "The People desk will issue it within two working days.",
-              })
-            }
-          >
-            <FileText /> Request salary certificate
-          </Button>
+          <>
+            {selected && (
+              <PayslipExplainButton
+                periodLabel={selected.label}
+                prevLabel={list[list.indexOf(selected) + 1]?.label}
+                onFallback={() => setExplaining(true)}
+              />
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                mockAction("Salary certificate requested", {
+                  description: "The People desk will issue it within two working days.",
+                })
+              }
+            >
+              <FileText /> Request salary certificate
+            </Button>
+          </>
         }
       />
 
@@ -110,41 +166,26 @@ export default function PayslipsPage() {
         />
       </StatRow>
 
-      <div className="grid gap-3 lg:grid-cols-[minmax(0,320px)_1fr]">
-        {/* ----------------------------------------------------- the list */}
-        <Section title="Pay history" description="Newest first. Select a month to preview it." bodyClassName="p-0">
-          <ul className="scrollbar-thin max-h-[560px] overflow-y-auto">
-            {list.map((p) => {
-              const active = p.periodId === selected?.periodId;
-              return (
-                <li key={p.periodId} className="border-b border-border last:border-0">
-                  <button
-                    type="button"
-                    onClick={() => setSelectedId(p.periodId)}
-                    aria-current={active ? "true" : undefined}
-                    className={cn(
-                      "flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring",
-                      active ? "bg-primary-soft" : "hover:bg-muted/60",
-                    )}
-                  >
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-xs font-medium">{p.label}</p>
-                      <p className="tnum mt-0.5 text-[11px] text-muted-foreground">
-                        Paid {fmtDate(p.payDate)}
-                        {p.lopDays > 0 ? ` · ${p.lopDays} LOP` : ""}
-                      </p>
-                    </div>
-                    <div className="shrink-0 text-right">
-                      <p className="tnum text-xs font-semibold">{inr(p.net, { decimals: false })}</p>
-                      <StatusBadge status={p.status} className="mt-0.5" />
-                    </div>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        </Section>
+      <Section
+        title="Pay history"
+        description="Newest first. Click a month to load its payslip below."
+        bodyClassName="p-4"
+      >
+        <DataTable
+          columns={columns}
+          data={list}
+          getRowId={(p) => p.periodId}
+          searchKeys={["label", "fy"]}
+          searchPlaceholder="Search month…"
+          onRowClick={(p) => setSelectedId(p.periodId)}
+          exportName={`payslips-${persona.employeeId}`}
+          emptyIcon={FileText}
+          emptyTitle="No payslips"
+          pageSize={12}
+        />
+      </Section>
 
+      <div className="grid gap-3 xl:grid-cols-2">
         {/* -------------------------------------------------- the preview */}
         <div className="flex flex-col gap-3">
           {slip && selected ? (
@@ -259,40 +300,40 @@ export default function PayslipsPage() {
                 <Button variant="outline" size="sm" onClick={() => window.print()}>
                   <Printer /> Print
                 </Button>
-                <Button variant="ghost" size="sm" className="ml-auto" asChild>
-                  <Link href={`/payroll/runs/${selected.runId}/employee/${slip.employee.code}`}>
-                    <Calculator /> Explain every number
-                  </Link>
+                <Button variant="ghost" size="sm" className="ml-auto" onClick={() => setExplaining(true)}>
+                  <Calculator /> Explain every number
                 </Button>
               </div>
             </Card>
           ) : (
             <EmptyState icon={FileText} title="Select a payslip" description="Pick a month from the list." />
           )}
-
-          <BarCompareChart
-            title="Net pay by month"
-            description="Your take-home across the last 12 pay periods."
-            data={[...list].reverse().map((p) => ({
-              month: p.shortLabel,
-              gross: p.gross,
-              net: p.net,
-            }))}
-            xKey="month"
-            series={[
-              { key: "gross", label: "Gross" },
-              { key: "net", label: "Net pay" },
-            ]}
-            valueFormat={inrCompact}
-            height={230}
-            onBarClick={(row) => {
-              const hit = list.find((p) => p.shortLabel === row.month);
-              if (hit) setSelectedId(hit.periodId);
-            }}
-            footnote="Click any bar to load that month's payslip in the preview above."
-          />
         </div>
+
+        <BarCompareChart
+          title="Net pay by month"
+          description="Your take-home across the last 12 pay periods."
+          data={[...list].reverse().map((p) => ({
+            month: p.shortLabel,
+            gross: p.gross,
+            net: p.net,
+          }))}
+          xKey="month"
+          series={[
+            { key: "gross", label: "Gross" },
+            { key: "net", label: "Net pay" },
+          ]}
+          valueFormat={inrCompact}
+          height={230}
+          onBarClick={(row) => {
+            const hit = list.find((p) => p.shortLabel === row.month);
+            if (hit) setSelectedId(hit.periodId);
+          }}
+          footnote="Click any bar to load that month's payslip in the preview."
+        />
       </div>
+
+      {slip && <PayslipExplainSheet slip={slip} open={explaining} onOpenChange={setExplaining} />}
     </PageBody>
   );
 }

@@ -42,6 +42,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  useDiscardGuard,
 } from "@/components/ui/overlays";
 import {
   GOAL_CATEGORIES,
@@ -108,16 +109,23 @@ export function GoalCard({
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  <DropdownMenuItem onSelect={onCheckIn}>
-                    <Flag /> Log a check-in
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onSelect={onMarkAchieved} disabled={goal.progress >= 100}>
-                    <Target /> Mark every key result achieved
-                  </DropdownMenuItem>
+                  {/* The goal sheet is edited under my.goals · E (no persona holds D on it). */}
+                  <Gated menuKey="my.goals" action="E">
+                    <DropdownMenuItem onSelect={onCheckIn}>
+                      <Flag /> Log a check-in
+                    </DropdownMenuItem>
+                  </Gated>
+                  <Gated menuKey="my.goals" action="E">
+                    <DropdownMenuItem onSelect={onMarkAchieved} disabled={goal.progress >= 100}>
+                      <Target /> Mark every key result achieved
+                    </DropdownMenuItem>
+                  </Gated>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem destructive onSelect={onRemove}>
-                    <Trash2 /> Remove this goal
-                  </DropdownMenuItem>
+                  <Gated menuKey="my.goals" action="E">
+                    <DropdownMenuItem destructive onSelect={onRemove}>
+                      <Trash2 /> Remove this goal
+                    </DropdownMenuItem>
+                  </Gated>
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
@@ -215,6 +223,9 @@ function announceKr(title: string, progress: number) {
 
 /* ------------------------------------------------------------- add goal */
 
+/** Session counter for goals added in the demo — deterministic ids, no clock. */
+let newGoalSeq = 0;
+
 const CATEGORY_VALUES = GOAL_CATEGORIES as [GoalCategory, ...GoalCategory[]];
 
 export interface ParentGoalOption {
@@ -294,7 +305,7 @@ export function AddGoalDialog({
     reset,
     setValue,
     watch,
-    formState: { errors, isSubmitting },
+    formState: { errors, isSubmitting, isDirty },
   } = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: {
@@ -318,6 +329,7 @@ export function AddGoalDialog({
     },
     [onOpenChange, reset],
   );
+  const { requestClose, guard } = useDiscardGuard(isDirty, () => close(false));
 
   const submit = handleSubmit((values) => {
     const parent = parentOptions.find((p) => p.id === values.parentGoalId) ?? null;
@@ -325,7 +337,8 @@ export function AddGoalDialog({
       .split("\n")
       .map((l) => l.trim())
       .filter((l) => l.length > 3);
-    const id = `GOL-NEW-${Date.now().toString(36).toUpperCase()}`;
+    newGoalSeq += 1;
+    const id = `GOL-NEW-${String(newGoalSeq).padStart(3, "0")}`;
     const goal: Goal = {
       id,
       ownerCode: "",
@@ -363,65 +376,123 @@ export function AddGoalDialog({
   });
 
   return (
-    <Dialog open={open} onOpenChange={close}>
-      <DialogContent size="lg">
-        <DialogHeader>
-          <DialogTitle>Add a goal</DialogTitle>
-          <DialogDescription>
-            {GOAL_PERIOD.label} · <span className="tnum">{remainingWeight}%</span> of weightage still
-            unallocated. Every employee&apos;s goals must total exactly 100%.
-          </DialogDescription>
-        </DialogHeader>
+    <>
+      <Dialog open={open} onOpenChange={(v) => (v ? close(true) : requestClose())}>
+        <DialogContent size="lg">
+          <DialogHeader>
+            <DialogTitle>Add a goal</DialogTitle>
+            <DialogDescription>
+              {GOAL_PERIOD.label} · <span className="tnum">{remainingWeight}%</span> of weightage still
+              unallocated. Every employee&apos;s goals must total exactly 100%.
+            </DialogDescription>
+          </DialogHeader>
 
-        <form onSubmit={submit} noValidate>
-          <DialogBody className="flex flex-col gap-3.5">
-            {remainingWeight <= 0 && (
-              <p
-                role="alert"
-                className="rounded-md border border-warning/30 bg-warning-soft px-3 py-2 text-xs text-warning-fg"
-              >
-                All 100% is already allocated. Lower the weightage on an existing goal before adding
-                another one — this form will block the submit until then.
-              </p>
-            )}
-
-            <Field label="Goal title" htmlFor="goal-title" required error={errors.title?.message}>
-              <Input
-                id="goal-title"
-                placeholder="Cut p95 checkout latency from 840 ms to under 400 ms"
-                aria-invalid={!!errors.title}
-                {...register("title")}
-              />
-            </Field>
-
-            <Field
-              label="What does done look like?"
-              htmlFor="goal-desc"
-              required
-              error={errors.description?.message}
-            >
-              <Textarea
-                id="goal-desc"
-                rows={3}
-                placeholder="Describe the outcome, the baseline you are moving from, and how it will be measured."
-                aria-invalid={!!errors.description}
-                {...register("description")}
-              />
-            </Field>
-
-            <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-3">
-              <Field label="Category" required error={errors.category?.message}>
-                <Select
-                  value={category}
-                  onValueChange={(v) => setValue("category", v as GoalCategory, { shouldValidate: true })}
+          <form onSubmit={submit} noValidate>
+            <DialogBody className="flex flex-col gap-3.5">
+              {remainingWeight <= 0 && (
+                <p
+                  role="alert"
+                  className="rounded-md border border-warning/30 bg-warning-soft px-3 py-2 text-xs text-warning-fg"
                 >
-                  <SelectTrigger aria-label="Category">
-                    <SelectValue />
+                  All 100% is already allocated. Lower the weightage on an existing goal before adding
+                  another one — this form will block the submit until then.
+                </p>
+              )}
+
+              <Field label="Goal title" htmlFor="goal-title" required error={errors.title?.message}>
+                <Input
+                  id="goal-title"
+                  placeholder="Cut p95 checkout latency from 840 ms to under 400 ms"
+                  aria-invalid={!!errors.title}
+                  {...register("title")}
+                />
+              </Field>
+
+              <Field
+                label="What does done look like?"
+                htmlFor="goal-desc"
+                required
+                error={errors.description?.message}
+              >
+                <Textarea
+                  id="goal-desc"
+                  rows={3}
+                  placeholder="Describe the outcome, the baseline you are moving from, and how it will be measured."
+                  aria-invalid={!!errors.description}
+                  {...register("description")}
+                />
+              </Field>
+
+              <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-3">
+                <Field label="Category" required error={errors.category?.message}>
+                  <Select
+                    value={category}
+                    onValueChange={(v) =>
+                      setValue("category", v as GoalCategory, { shouldValidate: true, shouldDirty: true })
+                    }
+                  >
+                    <SelectTrigger aria-label="Category">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {GOAL_CATEGORIES.map((c) => (
+                        <SelectItem key={c} value={c}>
+                          {c}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+
+                <Field
+                  label="Weightage %"
+                  htmlFor="goal-weight"
+                  required
+                  error={errors.weightage?.message}
+                  hint={`${remainingWeight}% unallocated`}
+                >
+                  <Input
+                    id="goal-weight"
+                    type="number"
+                    min={5}
+                    max={100}
+                    step={1}
+                    className="tnum"
+                    aria-invalid={!!errors.weightage}
+                    {...register("weightage", { valueAsNumber: true })}
+                  />
+                </Field>
+
+                <Field label="Target date" htmlFor="goal-date" required error={errors.targetDate?.message}>
+                  <Input
+                    id="goal-date"
+                    type="date"
+                    className="tnum"
+                    aria-invalid={!!errors.targetDate}
+                    {...register("targetDate")}
+                  />
+                </Field>
+              </div>
+
+              <Field
+                label="Rolls up to"
+                error={errors.parentGoalId?.message}
+                hint="Cascading makes the roll-up visible on your manager's own goal page."
+              >
+                <Select
+                  value={parentGoalId}
+                  onValueChange={(v) =>
+                    setValue("parentGoalId", v, { shouldValidate: true, shouldDirty: true })
+                  }
+                >
+                  <SelectTrigger aria-label="Parent goal">
+                    <SelectValue placeholder="No parent goal" />
                   </SelectTrigger>
                   <SelectContent>
-                    {GOAL_CATEGORIES.map((c) => (
-                      <SelectItem key={c} value={c}>
-                        {c}
+                    <SelectItem value="none">No parent — this goal stands alone</SelectItem>
+                    {parentOptions.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.title} · {p.ownerName}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -429,88 +500,37 @@ export function AddGoalDialog({
               </Field>
 
               <Field
-                label="Weightage %"
-                htmlFor="goal-weight"
+                label="Key results"
+                htmlFor="goal-krs"
                 required
-                error={errors.weightage?.message}
-                hint={`${remainingWeight}% unallocated`}
+                error={errors.keyResults?.message}
+                hint="One per line, up to five. Each should carry a number you can check."
               >
-                <Input
-                  id="goal-weight"
-                  type="number"
-                  min={5}
-                  max={100}
-                  step={1}
-                  className="tnum"
-                  aria-invalid={!!errors.weightage}
-                  {...register("weightage", { valueAsNumber: true })}
+                <Textarea
+                  id="goal-krs"
+                  rows={4}
+                  placeholder={
+                    "Remove the synchronous tax lookup from the request path\nHold p95 under 400 ms for four consecutive weeks"
+                  }
+                  aria-invalid={!!errors.keyResults}
+                  {...register("keyResults")}
                 />
               </Field>
+            </DialogBody>
 
-              <Field label="Target date" htmlFor="goal-date" required error={errors.targetDate?.message}>
-                <Input
-                  id="goal-date"
-                  type="date"
-                  className="tnum"
-                  aria-invalid={!!errors.targetDate}
-                  {...register("targetDate")}
-                />
-              </Field>
-            </div>
-
-            <Field
-              label="Rolls up to"
-              error={errors.parentGoalId?.message}
-              hint="Cascading makes the roll-up visible on your manager's own goal page."
-            >
-              <Select
-                value={parentGoalId}
-                onValueChange={(v) => setValue("parentGoalId", v, { shouldValidate: true })}
-              >
-                <SelectTrigger aria-label="Parent goal">
-                  <SelectValue placeholder="No parent goal" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">No parent — this goal stands alone</SelectItem>
-                  {parentOptions.map((p) => (
-                    <SelectItem key={p.id} value={p.id}>
-                      {p.title} · {p.ownerName}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-
-            <Field
-              label="Key results"
-              htmlFor="goal-krs"
-              required
-              error={errors.keyResults?.message}
-              hint="One per line, up to five. Each should carry a number you can check."
-            >
-              <Textarea
-                id="goal-krs"
-                rows={4}
-                placeholder={
-                  "Remove the synchronous tax lookup from the request path\nHold p95 under 400 ms for four consecutive weeks"
-                }
-                aria-invalid={!!errors.keyResults}
-                {...register("keyResults")}
-              />
-            </Field>
-          </DialogBody>
-
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => close(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" loading={isSubmitting}>
-              <Plus /> Create goal
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={requestClose}>
+                Cancel
+              </Button>
+              <Button type="submit" loading={isSubmitting}>
+                <Plus /> Create goal
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+      {guard}
+    </>
   );
 }
 

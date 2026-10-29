@@ -6,6 +6,7 @@ import {
   CalendarClock,
   CheckCircle2,
   ChevronsDownUp,
+  Flag,
   ChevronsUpDown,
   GitFork,
   Plus,
@@ -44,6 +45,9 @@ import {
   TabsTrigger,
 } from "@/components/ui/primitives";
 import { FilterSelect } from "@/components/ui/overlays";
+import { DataTable } from "@/components/data-table";
+import { ViewToggle, type ListView } from "@/components/people/view-toggle";
+import { goalColumns } from "@/components/growth/goal-columns";
 import {
   AddGoalDialog,
   GoalCard,
@@ -85,6 +89,7 @@ export default function GoalsPage() {
   const [status, setStatus] = React.useState<StatusFilter>("all");
   const [addOpen, setAddOpen] = React.useState(false);
   const [pendingRemove, setPendingRemove] = React.useState<Goal | null>(null);
+  const [view, setView] = React.useState<ListView>("cards");
 
   /* Switching persona mid-demo swaps the whole goal sheet. */
   React.useEffect(() => {
@@ -214,6 +219,16 @@ export default function GoalsPage() {
     });
 
   const allExpanded = visible.length > 0 && visible.every((g) => expanded.has(g.id));
+
+  const checkInMany = (rows: Goal[]) => {
+    const ids = new Set(rows.map((g) => g.id));
+    setGoals((gs) => gs.map((g) => (ids.has(g.id) ? { ...g, lastCheckIn: DEMO_TODAY } : g)));
+    mockAction(`Check-in logged on ${rows.length} goal${rows.length === 1 ? "" : "s"}`, {
+      description: `Dated ${DEMO_TODAY}. Your manager sees these on their cascade view.`,
+    });
+  };
+
+  const columns = goalColumns({ onCheckIn: checkIn, onMarkAchieved: markAchieved, onRemove: setPendingRemove });
 
   /* -------------------------------------------------------------- render */
 
@@ -362,16 +377,19 @@ export default function GoalsPage() {
                     <ShieldCheck className="size-3" aria-hidden />
                     Weightage {allocated} / 100
                   </Badge>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() =>
-                      setExpanded(allExpanded ? new Set() : new Set(visible.map((g) => g.id)))
-                    }
-                  >
-                    {allExpanded ? <ChevronsDownUp /> : <ChevronsUpDown />}
-                    {allExpanded ? "Collapse all" : "Expand all"}
-                  </Button>
+                  {view === "cards" && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        setExpanded(allExpanded ? new Set() : new Set(visible.map((g) => g.id)))
+                      }
+                    >
+                      {allExpanded ? <ChevronsDownUp /> : <ChevronsUpDown />}
+                      {allExpanded ? "Collapse all" : "Expand all"}
+                    </Button>
+                  )}
+                  <ViewToggle view={view} onChange={setView} />
                 </div>
               </div>
             </Section>
@@ -382,6 +400,45 @@ export default function GoalsPage() {
                   <Skeleton key={i} className="h-[132px]" />
                 ))}
               </div>
+            ) : view === "table" && goals.length > 0 ? (
+              <DataTable<Goal>
+                columns={columns}
+                data={visible}
+                getRowId={(g) => g.id}
+                toolbar={
+                  <span className="tnum text-xs text-muted-foreground">
+                    {visible.length} of {goals.length} goals · click a row to update its key results
+                  </span>
+                }
+                onRowClick={(g) => {
+                  setView("cards");
+                  setExpanded((s) => new Set(s).add(g.id));
+                }}
+                enableSelection
+                exportName="my-goals"
+                emptyIcon={Target}
+                emptyTitle="No goals match these filters"
+                emptyDescription="Nothing in this category and status combination. Clear the filters to see the full sheet."
+                emptyAction={
+                  <Button size="sm" variant="outline" onClick={clearFilters}>
+                    <X /> Clear filters
+                  </Button>
+                }
+                bulkActions={(rows, clear) => (
+                  <Gated menuKey="my.goals" action="E">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        checkInMany(rows);
+                        clear();
+                      }}
+                    >
+                      <Flag /> Log check-in
+                    </Button>
+                  </Gated>
+                )}
+              />
             ) : visible.length === 0 ? (
               <EmptyState
                 icon={Target}

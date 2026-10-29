@@ -1,4 +1,5 @@
-import { format, formatDistanceToNowStrict, parseISO } from "date-fns";
+import { format, formatDistanceStrict, isValid, parseISO } from "date-fns";
+import { DEMO_NOW } from "@/mock/org";
 
 /* ---------------------------------------------------------------- currency */
 
@@ -55,15 +56,30 @@ export function delta(value: number, decimals = 1, unit = "%") {
 
 export const toDate = (d: string | Date) => (typeof d === "string" ? parseISO(d) : d);
 
-export const fmtDate = (d: string | Date) => format(toDate(d), "dd MMM yyyy");
-export const fmtDateShort = (d: string | Date) => format(toDate(d), "dd MMM");
-export const fmtDay = (d: string | Date) => format(toDate(d), "EEE, dd MMM");
-export const fmtMonth = (d: string | Date) => format(toDate(d), "MMM yyyy");
-export const fmtTime = (d: string | Date) => format(toDate(d), "hh:mm a");
-export const fmtDateTime = (d: string | Date) => format(toDate(d), "dd MMM yyyy, hh:mm a");
+/** "—" for a missing or unparseable date — one bad fixture row must not take
+    the whole screen down with a RangeError from date-fns. */
+const safeFormat = (d: string | Date | null | undefined, pattern: string) => {
+  const date = d == null ? null : toDate(d);
+  return date && isValid(date) ? format(date, pattern) : "—";
+};
+
+export const fmtDate = (d: string | Date) => safeFormat(d, "dd MMM yyyy");
+export const fmtDateShort = (d: string | Date) => safeFormat(d, "dd MMM");
+export const fmtDay = (d: string | Date) => safeFormat(d, "EEE, dd MMM");
+export const fmtMonth = (d: string | Date) => safeFormat(d, "MMM yyyy");
+export const fmtTime = (d: string | Date) => safeFormat(d, "hh:mm a");
+export const fmtDateTime = (d: string | Date) => safeFormat(d, "dd MMM yyyy, hh:mm a");
 export const fmtIso = (d: Date) => format(d, "yyyy-MM-dd");
-export const fmtAgo = (d: string | Date) =>
-  `${formatDistanceToNowStrict(toDate(d))} ago`;
+/** "2 hours ago" / "in 3 days", measured from the demo's fixed now (DEMO_NOW),
+    never the wall clock — so the label is stable and SSR matches the client. */
+export const fmtAgo = (d: string | Date) => {
+  const when = d == null ? null : toDate(d);
+  if (!when || !isValid(when)) return "—";
+  const now = parseISO(DEMO_NOW);
+  if (Math.abs(when.getTime() - now.getTime()) < 60_000) return "just now";
+  const dist = formatDistanceStrict(when, now);
+  return when > now ? `in ${dist}` : `${dist} ago`;
+};
 
 /** Seconds -> 07:42:13 for the live punch timer. */
 export function hms(totalSeconds: number) {

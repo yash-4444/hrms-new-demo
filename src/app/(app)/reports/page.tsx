@@ -96,6 +96,9 @@ const SEED_RUNS: RunRecord[] = [
   { id: "RUN-2477", reportId: "r-wp-03", reportName: "Helpdesk SLA Performance", format: "XLSX", scope: "All branches", period: "Last 7 days", rows: 40, at: "2026-09-16T06:30:00", status: "completed", by: "Scheduler" },
 ];
 
+/** Library cards rendered per "page" — keeps the first paint light. */
+const LIBRARY_PAGE = 12;
+
 const PERIOD_OPTIONS = [
   "This month",
   "Last month",
@@ -119,6 +122,14 @@ export default function ReportsPage() {
   const [runs, setRuns] = React.useState<RunRecord[]>(SEED_RUNS);
   const [active, setActive] = React.useState<ReportDef | null>(null);
   const [tab, setTab] = React.useState("library");
+  const [libraryLimit, setLibraryLimit] = React.useState(LIBRARY_PAGE);
+
+  /* Simulated completions are cancelled if the page unmounts mid-run. */
+  const timers = React.useRef<number[]>([]);
+  React.useEffect(() => {
+    const pending = timers.current;
+    return () => pending.forEach((t) => window.clearTimeout(t));
+  }, []);
 
   /* run dialog parameters */
   const [fmt, setFmt] = React.useState("XLSX");
@@ -175,9 +186,11 @@ export default function ReportsPage() {
       description: `${record.scope} · ${period} · ${fmt}. Run ${id}.`,
     });
     // Optimistic completion so the demo shows the finished state.
-    setTimeout(() => {
-      setRuns((rs) => rs.map((x) => (x.id === id ? { ...x, status: "completed" } : x)));
-    }, 1400);
+    timers.current.push(
+      window.setTimeout(() => {
+        setRuns((rs) => rs.map((x) => (x.id === id ? { ...x, status: "completed" } : x)));
+      }, 1400),
+    );
   };
 
   const visible = React.useMemo(
@@ -221,6 +234,7 @@ export default function ReportsPage() {
         id: "actions",
         header: "",
         enableSorting: false,
+        enableHiding: false,
         cell: ({ row }) => (
           <Button
             variant="ghost"
@@ -342,7 +356,7 @@ export default function ReportsPage() {
             </Card>
           ) : (
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-              {visible.map((r) => {
+              {visible.slice(0, libraryLimit).map((r) => {
                 const fav = favourites.has(r.id);
                 return (
                   <Card key={r.id} className="flex flex-col p-3.5">
@@ -404,6 +418,17 @@ export default function ReportsPage() {
                 );
               })}
             </div>
+          )}
+          {visible.length > libraryLimit && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="self-center"
+              onClick={() => setLibraryLimit((n) => n + LIBRARY_PAGE)}
+            >
+              Show {Math.min(LIBRARY_PAGE, visible.length - libraryLimit)} more of{" "}
+              {visible.length - libraryLimit} remaining
+            </Button>
           )}
         </TabsContent>
 

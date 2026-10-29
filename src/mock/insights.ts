@@ -1,11 +1,14 @@
-import { addMonths, differenceInMonths, format, parseISO, startOfMonth } from "date-fns";
+import { addDays, addMonths, differenceInMonths, format, parseISO, startOfMonth } from "date-fns";
 import { mulberry32, randInt } from "@/lib/utils";
 import {
   EMPLOYEES,
   PEOPLE_STATS,
+  employeeByCode,
   reporteesOf,
   type Employee,
 } from "./employees";
+import { ATTENDANCE_CODES, attendanceOn } from "./attendance";
+import { LEAVE_APPLICATIONS, LEAVE_EMPLOYEE_CODES } from "./leave";
 import { BRANCHES, DEMO_TODAY, DEPARTMENTS, GRADES, HOLIDAYS, deptName } from "./org";
 
 /* ============================================================================
@@ -37,30 +40,101 @@ function monthsBack(n: number) {
 export interface HeadcountPoint {
   month: string;
   monthIso: string;
+  /** Headcount on the first day of the month — the previous month's closing. */
+  opening: number;
+  /** Closing headcount: opening + joiners − leavers, always. */
   headcount: number;
   joiners: number;
   leavers: number;
   attritionPct: number;
 }
 
-/** Headcount at the end of each month, back-computed from real joining dates. */
-export function headcountTrend(months = 12): HeadcountPoint[] {
+/** Org slice a trend is computed for — the analytics branch/department filter. */
+export type ScopeMatch = (x: { departmentId: string; branchId: string }) => boolean;
+
+const EVERYONE: ScopeMatch = () => true;
+
+export function scopeMatcher(branch: string, department: string): ScopeMatch {
+  return (x) =>
+    (branch === "all" || x.branchId === branch) &&
+    (department === "all" || x.departmentId === department);
+}
+
+/** A past leaver. Leavers are not in the current roster by definition, so the
+    last 24 months of exits are modelled here — each borrows the department and
+    branch of a real roster member, so a filtered trend still reconciles. */
+export interface PastLeaver {
+  exitDate: string;
+  departmentId: string;
+  branchId: string;
+  voluntary: boolean;
+  regrettable: boolean;
+}
+
+const HISTORY_MONTHS = 24;
+
+export const PAST_LEAVERS: PastLeaver[] = (() => {
+  const seed = mulberry32(4242);
+  const out: PastLeaver[] = [];
+  monthsBack(HISTORY_MONTHS).forEach((d, i) => {
+    /* A slightly leakier prior year, so the 12-month rate is improving. */
+    const n = 2 + Math.floor(seed() * 4) + (i < 12 && seed() < 0.4 ? 1 : 0);
+    const lastDay = addMonths(d, 1) > TODAY ? TODAY.getDate() : 28;
+    for (let k = 0; k < n; k++) {
+      const like = EMPLOYEES[randInt(seed, 0, EMPLOYEES.length - 1)];
+      const voluntary = seed() < 0.72;
+      out.push({
+        exitDate: format(new Date(d.getFullYear(), d.getMonth(), randInt(seed, 1, lastDay)), "yyyy-MM-dd"),
+        departmentId: like.departmentId,
+        branchId: like.branchId,
+        voluntary,
+        regrettable: voluntary && seed() < 0.5,
+      });
+    }
+  });
+  return out;
+})();
+
+/** Roster members on the books on the day before `endIso`. */
+function rosterOn(endIso: string, match: ScopeMatch) {
+  return EMPLOYEES.filter(
+    (e) => match(e) && e.joiningDate < endIso && !(e.exitDate && e.exitDate < endIso),
+  ).length;
+}
+
+/** Past leavers who were still employed on the day before `endIso`. */
+function leaversStillHere(endIso: string, match: ScopeMatch) {
+  return PAST_LEAVERS.filter((l) => match(l) && l.exitDate >= endIso).length;
+}
+
+/**
+ * Month-by-month movement. Closing headcount is the roster on the books at
+ * month end (real joining and exit dates) plus the modelled leavers who had
+ * not yet left, so for every month opening + joiners − leavers = closing.
+ */
+export function headcountTrend(months = 12, match: ScopeMatch = EVERYONE): HeadcountPoint[] {
   const pts = monthsBack(months);
-  const leaverSeed = mulberry32(4242);
+  const dayAfterToday = format(addDays(TODAY, 1), "yyyy-MM-dd");
+  const closingAt = (endIso: string) => rosterOn(endIso, match) + leaversStillHere(endIso, match);
 
   return pts.map((d) => {
-    const end = addMonths(d, 1);
-    const headcount = EMPLOYEES.filter((e) => parseISO(e.joiningDate) < end).length;
+    const startIso = format(d, "yyyy-MM-dd");
+    const nextIso = format(addMonths(d, 1), "yyyy-MM-dd");
+    /* The current month closes "as on today". */
+    const endIso = nextIso < dayAfterToday ? nextIso : dayAfterToday;
+    const opening = closingAt(startIso);
+    const headcount = closingAt(endIso);
     const joiners = EMPLOYEES.filter(
-      (e) => parseISO(e.joiningDate) >= d && parseISO(e.joiningDate) < end,
+      (e) => match(e) && e.joiningDate >= startIso && e.joiningDate < endIso,
     ).length;
-    // Leavers are not in the current roster by definition — model them at a
-    // plausible monthly rate that integrates to the 12-month attrition figure.
-    const leavers = Math.max(0, Math.round(headcount * 0.0092 + leaverSeed() * 2.4));
-    const avg = headcount || 1;
+    const leavers =
+      EMPLOYEES.filter((e) => match(e) && e.exitDate && e.exitDate >= startIso && e.exitDate < endIso).length +
+      PAST_LEAVERS.filter((l) => match(l) && l.exitDate >= startIso && l.exitDate < endIso).length;
+    const avg = (opening + headcount) / 2 || 1;
     return {
       month: format(d, "MMM yy"),
       monthIso: format(d, "yyyy-MM"),
+      opening,
       headcount,
       joiners,
       leavers,
@@ -70,25 +144,32 @@ export function headcountTrend(months = 12): HeadcountPoint[] {
 }
 
 export const HEADCOUNT_12M = headcountTrend(12);
-export const HEADCOUNT_24M = headcountTrend(24);
+export const HEADCOUNT_24M = headcountTrend(HISTORY_MONTHS);
 
-export const ATTRITION = (() => {
-  const last12 = HEADCOUNT_12M;
-  const leavers = last12.reduce((a, b) => a + b.leavers, 0);
-  const avgHead = last12.reduce((a, b) => a + b.headcount, 0) / last12.length;
-  const rate = (leavers / avgHead) * 100;
-  const prevLeavers = HEADCOUNT_24M.slice(0, 12).reduce((a, b) => a + b.leavers, 0);
-  const prevAvg = HEADCOUNT_24M.slice(0, 12).reduce((a, b) => a + b.headcount, 0) / 12;
-  const prevRate = (prevLeavers / prevAvg) * 100;
-  return {
-    leavers12m: leavers,
-    rate: Number(rate.toFixed(1)),
-    prevRate: Number(prevRate.toFixed(1)),
-    delta: Number((rate - prevRate).toFixed(1)),
-    voluntaryPct: 71.4,
-    regrettablePct: 38.2,
+/** Rolling 12-month attrition for an org slice, against the 12 months before. */
+export function attritionFor(match: ScopeMatch = EVERYONE) {
+  const trend = headcountTrend(HISTORY_MONTHS, match);
+  const rateOf = (pts: HeadcountPoint[]) => {
+    const leavers = pts.reduce((a, b) => a + b.leavers, 0);
+    const avgHead = pts.reduce((a, b) => a + b.headcount, 0) / Math.max(1, pts.length);
+    return { leavers, rate: avgHead ? (leavers / avgHead) * 100 : 0 };
   };
-})();
+  const cur = rateOf(trend.slice(-12));
+  const prev = rateOf(trend.slice(0, 12));
+  const windowStart = `${trend[trend.length - 12].monthIso}-01`;
+  const exits = PAST_LEAVERS.filter((l) => match(l) && l.exitDate >= windowStart);
+  const share = (n: number) => Number(((n / Math.max(1, exits.length)) * 100).toFixed(1));
+  return {
+    leavers12m: cur.leavers,
+    rate: Number(cur.rate.toFixed(1)),
+    prevRate: Number(prev.rate.toFixed(1)),
+    delta: Number((cur.rate - prev.rate).toFixed(1)),
+    voluntaryPct: share(exits.filter((l) => l.voluntary).length),
+    regrettablePct: share(exits.filter((l) => l.regrettable).length),
+  };
+}
+
+export const ATTRITION = attritionFor();
 
 /** Attrition rate per month, for the trend chart. */
 export const ATTRITION_TREND = HEADCOUNT_12M.map((p) => ({
@@ -200,22 +281,9 @@ export const SPAN_OF_CONTROL = (() => {
 
 /* ----------------------------------------------------- payroll cost view */
 
-/** Monthly payroll cost derived from real CTCs, with a modest ramp. */
-export const PAYROLL_COST_TREND = (() => {
-  const pts = monthsBack(12);
-  const monthlyNow = PEOPLE_STATS.totalCtc / 12;
-  return pts.map((d, i) => {
-    const ramp = 0.88 + (i / 11) * 0.12;
-    const gross = Math.round((monthlyNow * ramp) / 1000) * 1000;
-    const employer = Math.round(gross * 0.1481);
-    return {
-      month: format(d, "MMM yy"),
-      gross,
-      employerCost: employer,
-      total: gross + employer,
-    };
-  });
-})();
+/** One payroll cost trend for the whole app — the pay-run-derived series, so
+    the last two points ARE the August and September run totals. */
+export { PAYROLL_COST_TREND } from "./payroll";
 
 export const COST_BY_CENTRE = DEPARTMENTS.map((d) => {
   const inDept = EMPLOYEES.filter((e) => e.departmentId === d.id);
@@ -241,21 +309,9 @@ export const COST_BY_BRANCH = BRANCHES.map((b) => {
 
 /* -------------------------------------------------- recruitment funnel */
 
-export const RECRUITMENT_FUNNEL = [
-  { stage: "Applied", value: 1284 },
-  { stage: "Screening", value: 412 },
-  { stage: "Interview", value: 168 },
-  { stage: "Offer", value: 46 },
-  { stage: "Hired", value: 31 },
-];
-
-export const SOURCE_MIX = [
-  { name: "Referral", value: 38 },
-  { name: "LinkedIn", value: 27 },
-  { name: "Naukri", value: 19 },
-  { name: "Careers site", value: 11 },
-  { name: "Agency", value: 5 },
-];
+/** Funnel and source mix come from the candidate fixtures, so /analytics and
+    the hiring screens count the same people. */
+export { RECRUITMENT_FUNNEL, SOURCE_MIX } from "./hiring";
 
 export const TIME_TO_FILL = DEPARTMENTS.slice(0, 6).map((d, i) => ({
   dept: d.name,
@@ -347,26 +403,46 @@ export interface TeamMemberOnLeave {
   until: string;
 }
 
-export const TEAM_ON_LEAVE_TODAY: TeamMemberOnLeave[] = (() => {
-  const seed = mulberry32(5150);
-  const types = ["Earned Leave", "Sick Leave", "Casual Leave", "Comp Off"];
-  return EMPLOYEES.filter((e) => e.status === "on_leave")
-    .slice(0, 6)
-    .map((e, i) => ({
-      code: e.code,
-      name: e.name,
-      designation: e.designation,
-      type: types[i % types.length],
-      until: format(new Date(TODAY.getTime() + randInt(seed, 1, 5) * 86400000), "yyyy-MM-dd"),
-    }));
-})();
+/**
+ * Who in `codes` is on leave on DEMO_TODAY — approved applications from the
+ * leave ledger first, then any day the attendance fixtures mark as leave, so
+ * the dashboard agrees with both /leave/calendar and /attendance/team.
+ */
+export function teamOnLeaveToday(codes: readonly string[]): TeamMemberOnLeave[] {
+  const set = new Set(codes);
+  const out: TeamMemberOnLeave[] = [];
+  for (const a of LEAVE_APPLICATIONS) {
+    if (!set.has(a.employeeCode) || a.status !== "approved") continue;
+    if (a.fromDate > DEMO_TODAY || a.toDate < DEMO_TODAY) continue;
+    if (out.some((m) => m.code === a.employeeCode)) continue;
+    out.push({
+      code: a.employeeCode,
+      name: a.employeeName,
+      designation: employeeByCode(a.employeeCode)?.designation ?? "",
+      type: a.typeName,
+      until: a.toDate,
+    });
+  }
+  /* Attendance-marked leave (comp off, short leave) with no application in the ledger window. */
+  const tracked = new Set(ATTENDANCE_CODES);
+  for (const code of codes) {
+    if (!tracked.has(code) || out.some((m) => m.code === code)) continue;
+    const rec = attendanceOn(code, DEMO_TODAY);
+    if (rec?.state !== "leave") continue;
+    const e = employeeByCode(code);
+    out.push({
+      code,
+      name: e?.name ?? code,
+      designation: e?.designation ?? "",
+      type: rec.leaveType ?? "Leave",
+      until: DEMO_TODAY,
+    });
+  }
+  return out.sort((a, b) => a.until.localeCompare(b.until) || a.name.localeCompare(b.name));
+}
 
-export const MY_LEAVE_BALANCE = [
-  { code: "EL", name: "Earned Leave", available: 12.5, accrued: 18, used: 5.5, carried: 0, entitlement: 18 },
-  { code: "CL", name: "Casual Leave", available: 4, accrued: 9, used: 5, carried: 0, entitlement: 9 },
-  { code: "SL", name: "Sick Leave", available: 8, accrued: 12, used: 4, carried: 0, entitlement: 12 },
-  { code: "CO", name: "Comp Off", available: 2, accrued: 3, used: 1, carried: 0, entitlement: 3 },
-];
+/** Org-wide view of who is on leave today (HR / owner scope). */
+export const TEAM_ON_LEAVE_TODAY: TeamMemberOnLeave[] = teamOnLeaveToday(LEAVE_EMPLOYEE_CODES);
 
 export interface ApprovalItem {
   id: string;
@@ -398,36 +474,41 @@ export const COMPLIANCE_ALERTS = [
   { id: "c5", title: "POSH annual report", due: "2026-09-10", owner: "Priya Menon", status: "overdue" as const, country: "India" },
 ];
 
-export const PAY_RUN_SNAPSHOT = {
-  id: "PR-2026-09",
-  period: "September 2026",
-  status: "calculated" as const,
-  steps: ["Draft", "Calculated", "Locked", "Approved", "Paid"],
-  currentStep: 1,
-  employees: 340,
-  gross: 54_182_400,
-  deductions: 9_735_800,
-  net: 44_446_600,
-  exceptions: 3,
-  cutoff: "2026-09-25",
-  payDate: "2026-09-30",
-};
+export interface TeamAttendanceCount {
+  present: number;
+  late: number;
+  onLeave: number;
+  absent: number;
+  total: number;
+}
 
-export const OPEN_POSITIONS = [
-  { code: "REQ-2026-003", role: "Senior Backend Engineer", dept: "Engineering", branch: "Bengaluru", ageDays: 34, candidates: 12, stage: "Interview" },
-  { code: "REQ-2026-007", role: "Product Designer", dept: "Design", branch: "Bengaluru", ageDays: 21, candidates: 8, stage: "Screening" },
-  { code: "REQ-2026-009", role: "Enterprise Account Executive", dept: "Sales", branch: "Newark NJ", ageDays: 58, candidates: 5, stage: "Offer" },
-  { code: "REQ-2026-011", role: "Senior SRE", dept: "IT & Operations", branch: "Pune", ageDays: 8, candidates: 3, stage: "Applied" },
-  { code: "REQ-2026-012", role: "Finance Analyst", dept: "Finance", branch: "Pune", ageDays: 15, candidates: 6, stage: "Screening" },
-];
+/**
+ * Today's attendance split for a set of employees, from the attendance
+ * fixtures. "Present" excludes late arrivals (they are counted in `late`);
+ * an approved leave covering today counts as on leave even without a record.
+ * Weekend / holiday / not-yet-marked members are in `total` only.
+ */
+export function teamAttendanceToday(codes: readonly string[]): TeamAttendanceCount {
+  const tracked = new Set(ATTENDANCE_CODES);
+  const onLeave = new Set(teamOnLeaveToday(codes).map((m) => m.code));
+  const t: TeamAttendanceCount = { present: 0, late: 0, onLeave: 0, absent: 0, total: codes.length };
+  for (const code of codes) {
+    const rec = tracked.has(code) ? attendanceOn(code, DEMO_TODAY) : undefined;
+    if (onLeave.has(code) || rec?.state === "leave") t.onLeave += 1;
+    else if (!rec) continue;
+    else if (rec.state === "absent") t.absent += 1;
+    else if (rec.state === "present" || rec.state === "overtime" || rec.state === "half_day") {
+      if (rec.late) t.late += 1;
+      else t.present += 1;
+    }
+  }
+  return t;
+}
 
-export const TEAM_ATTENDANCE_TODAY = {
-  present: 6,
-  late: 1,
-  onLeave: 1,
-  absent: 0,
-  total: 8,
-};
+/** Vikram Shah's team — the manager persona's default board. */
+export const TEAM_ATTENDANCE_TODAY: TeamAttendanceCount = teamAttendanceToday(
+  reporteesOf("STL-0031").map((e) => e.code),
+);
 
 /** Joiners and leavers in the current calendar month. */
 export const THIS_MONTH = (() => {

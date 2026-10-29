@@ -16,6 +16,7 @@ import {
 import { fmtDate, inr, inrCompact, num } from "@/lib/format";
 import {
   EXCEPTIONS,
+  EXCEPTION_META,
   PAYROLL_COST_TREND,
   PAY_RUNS,
   PAY_RUN_HISTORY,
@@ -130,6 +131,7 @@ export default function PayRunsPage() {
         id: "open",
         header: "",
         enableSorting: false,
+        enableHiding: false,
         cell: ({ row }) => (
           <Button variant="ghost" size="icon-sm" aria-label={`Open ${row.original.label}`} asChild>
             <Link href={`/payroll/runs/${row.original.id}`}>
@@ -176,7 +178,7 @@ export default function PayRunsPage() {
         <Alert
           tone="danger"
           icon={AlertTriangle}
-          title={`${exceptionCount} exception${exceptionCount === 1 ? "" : "s"} is blocking the ${current.label} run`}
+          title={`${exceptionCount} exception${exceptionCount === 1 ? " is" : "s are"} blocking the ${current.label} run`}
           action={
             <Button variant="outline" size="sm" asChild>
               <Link href={`/payroll/runs/${current.id}`}>Resolve</Link>
@@ -184,7 +186,7 @@ export default function PayRunsPage() {
           }
         >
           {EXCEPTIONS.slice(0, 3)
-            .map((e) => `${e.employeeName} — ${e.title}`)
+            .map((e) => `${e.employeeName} — ${EXCEPTION_META[e.type].label}`)
             .join(" · ")}
         </Alert>
       )}

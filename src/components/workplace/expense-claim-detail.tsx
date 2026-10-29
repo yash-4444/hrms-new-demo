@@ -217,9 +217,12 @@ export function ApprovalTrail({ claim }: { claim: ExpenseClaim }) {
 export function ExpenseClaimDetail({
   claim,
   onOpenChange,
+  footer,
 }: {
   claim: ExpenseClaim | null;
   onOpenChange: (v: boolean) => void;
+  /** Decision or draft controls, rendered left of Close. */
+  footer?: React.ReactNode;
 }) {
   return (
     <Sheet open={!!claim} onOpenChange={onOpenChange}>
@@ -281,6 +284,7 @@ export function ExpenseClaimDetail({
               <Button variant="outline" onClick={() => onOpenChange(false)}>
                 Close
               </Button>
+              {footer}
             </SheetFooter>
           </>
         )}

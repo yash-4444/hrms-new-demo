@@ -1,9 +1,10 @@
-import { PAY_RUNS, RUN_POPULATION } from "@/mock/payroll";
+import { PAY_RUNS, payRunRows } from "@/mock/payroll";
 import PayslipBreakdownView from "./view";
 
 /**
  * Traced breakdowns are pre-rendered for the two live runs only — August 2026
- * (paid) and September 2026 (calculated) — which is 2 × 309 pages. Generating
+ * (paid) and September 2026 (calculated) — one page per employee each run
+ * actually pays (joiners and leavers differ between the two). Generating
  * them for all twelve historical periods would be ~3,700 pages of payroll
  * computation for months that exist only as list context.
  *
@@ -13,7 +14,7 @@ import PayslipBreakdownView from "./view";
  */
 export function generateStaticParams() {
   return PAY_RUNS.flatMap((run) =>
-    RUN_POPULATION.map((emp) => ({ id: run.id, eid: emp.code })),
+    payRunRows(run.id).map((r) => ({ id: run.id, eid: r.employeeCode })),
   );
 }
 

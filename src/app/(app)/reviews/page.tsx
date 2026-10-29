@@ -30,7 +30,6 @@ import {
 } from "@/mock/growth";
 import { mockAction, useApp } from "@/components/app-state";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import {
   Alert,
   Avatar,
@@ -43,6 +42,7 @@ import {
 } from "@/components/ui/primitives";
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/overlays";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { useUnsavedChangesGuard } from "@/components/growth/review-form";
 import { ShareBar } from "@/components/charts";
 import { StatRow, StatTile } from "@/components/charts/stat-tile";
 import {
@@ -52,6 +52,8 @@ import {
   Section,
   useFakeLoad,
 } from "@/components/shell/page";
+import { ReviewCycleSummary } from "@/components/ai/embed/review-cycle-summary";
+import { ReviewDraftComment } from "@/components/ai/embed/review-draft-comment";
 
 const COLUMNS = [
   { id: "self", label: "Self", blurb: "The employee's own rating." },
@@ -61,7 +63,7 @@ const COLUMNS = [
 
 export default function ReviewsPage() {
   const loading = useFakeLoad();
-  const { persona } = useApp();
+  const { persona, can } = useApp();
 
   const [cycleId, setCycleId] = React.useState(ACTIVE_CYCLE.id);
   const cycle = REVIEW_CYCLES.find((c) => c.id === cycleId) ?? ACTIVE_CYCLE;
@@ -98,6 +100,17 @@ export default function ReviewsPage() {
     setDraft((d) => d.map((c) => (c.competencyId === competencyId ? { ...c, [column]: value } : c)));
     setDirty(true);
   };
+
+  /* Leaving with unsaved ratings — a link, another cycle or another subject — asks first. */
+  const { confirmLeave, guard: leaveGuard } = useUnsavedChangesGuard(dirty);
+
+  /* AI summary scope: the viewer's own reportees, or the whole cycle for calibration owners. */
+  const summaryScope = React.useMemo(() => {
+    const mine = availableForms.filter((f) => f.managerCode === persona.employeeId);
+    if (mine.length) return { forms: mine, label: "your reportees" };
+    if (can("growth.calibration", "V")) return { forms: availableForms, label: "all forms in the cycle" };
+    return null;
+  }, [availableForms, persona.employeeId, can]);
 
   const liveForm: ReviewForm | null = baseForm ? { ...baseForm, competencies: draft } : null;
   const divergent = liveForm ? divergentCompetencies(liveForm) : [];
@@ -145,6 +158,10 @@ export default function ReviewsPage() {
         />
       </StatRow>
 
+      {summaryScope && (
+        <ReviewCycleSummary key={cycle.id} forms={summaryScope.forms} cycleName={cycle.name} scopeLabel={summaryScope.label} />
+      )}
+
       {/* ------------------------------------------------------ cycle list */}
       <Section title="Review cycles" description="Select a cycle to load its forms." bodyClassName="p-0">
         <ul>
@@ -154,10 +171,12 @@ export default function ReviewsPage() {
               <li key={c.id} className="border-b border-border last:border-0">
                 <button
                   type="button"
-                  onClick={() => {
-                    setCycleId(c.id);
-                    setFormId(null);
-                  }}
+                  onClick={() =>
+                    confirmLeave(() => {
+                      setCycleId(c.id);
+                      setFormId(null);
+                    })
+                  }
                   aria-current={active ? "true" : undefined}
                   className={cn(
                     "flex w-full flex-wrap items-center gap-4 px-4 py-3 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring",
@@ -217,7 +236,7 @@ export default function ReviewsPage() {
           description={`${cycle.name} · rate each competency on the 1–5 scale. Self, manager and peer sit side by side.`}
           actions={
             <>
-              <Select value={liveForm.id} onValueChange={setFormId}>
+              <Select value={liveForm.id} onValueChange={(id) => confirmLeave(() => setFormId(id))}>
                 <SelectTrigger size="sm" className="w-[230px]" aria-label="Review subject">
                   <span className="truncate text-xs">
                     {employeeName(liveForm.employeeCode)} · {liveForm.employeeCode}
@@ -394,9 +413,22 @@ export default function ReviewsPage() {
               </p>
             </div>
             <div>
-              <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                Manager summary
-              </p>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Manager summary
+                </p>
+                {persona.employeeId !== liveForm.employeeCode && can("growth.reviews", "E") && (
+                  <ReviewDraftComment
+                    key={liveForm.id}
+                    form={liveForm}
+                    draft={draft}
+                    onAccept={(text) => {
+                      setSummary(text);
+                      setDirty(true);
+                    }}
+                  />
+                )}
+              </div>
               <Textarea
                 value={summary}
                 onChange={(e) => {
@@ -450,6 +482,7 @@ export default function ReviewsPage() {
           ))}
         </ol>
       </Section>
+      {leaveGuard}
     </PageBody>
   );
 }

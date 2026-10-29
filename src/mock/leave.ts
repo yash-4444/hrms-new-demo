@@ -1002,12 +1002,17 @@ function finaliseApplication(
   const days = applicationDays(d.typeCode, d.fromDate, d.toDate, d.halfDayFirst, d.halfDaySecond, country);
   const calendarDays = differenceInCalendarDays(parseISO(d.toDate), parseISO(d.fromDate)) + 1;
   const notice = d.typeCode === "SL" || d.typeCode === "LOP" ? randInt(rng, -1, 0) : randInt(rng, 2, 21);
+  /* Nobody applies in the future: a far-ahead leave was applied 0–3 days before
+     DEMO_TODAY (a stable per-record offset, so the rng stream is untouched). */
+  const proposed = d.appliedOn ?? format(addDays(parseISO(d.fromDate), -notice), "yyyy-MM-dd");
+  const offset = [0, 0, 1, 1, 1, 2, 3][(Number(emp.code.replace(/\D/g, "")) + Number(d.fromDate.slice(8, 10))) % 7];
   const appliedOn =
-    d.appliedOn ?? format(addDays(parseISO(d.fromDate), -notice), "yyyy-MM-dd");
-  const decided =
+    proposed > DEMO_TODAY ? format(addDays(TODAY, -offset), "yyyy-MM-dd") : proposed;
+  const decidedRaw =
     d.status === "pending"
       ? null
       : format(addDays(parseISO(appliedOn), randInt(rng, 0, 3)), "yyyy-MM-dd");
+  const decided = decidedRaw && decidedRaw > DEMO_TODAY ? DEMO_TODAY : decidedRaw;
   const comment =
     d.decisionComment !== undefined
       ? d.decisionComment

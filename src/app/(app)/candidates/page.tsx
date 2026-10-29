@@ -28,6 +28,7 @@ import {
   useFakeLoad,
 } from "@/components/shell/page";
 import { KanbanBoard } from "@/components/hiring/kanban-board";
+import { AiHiringNote } from "@/components/ai/embed/hiring-ai-ui";
 import { DEMO_TODAY } from "@/mock/org";
 import {
   CANDIDATES,
@@ -459,8 +460,10 @@ function CandidatePipeline() {
 
         <p className="text-[11px] text-muted-foreground">
           Cards are keyboard reachable — Tab to a card, Enter opens the profile, and the
-          Move to… menu does everything a drag does.
+          Move to… menu does everything a drag does. The ✨ match chip compares each resume with its
+          requisition&apos;s must-have skills, experience band and budget.
         </p>
+        <AiHiringNote />
       </Card>
 
       <p className="sr-only" aria-live="polite" role="status">

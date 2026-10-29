@@ -25,6 +25,8 @@ import {
   type LeaveStatus,
 } from "@/mock/leave";
 import { mockAction, useApp } from "@/components/app-state";
+import { LeaveRiskChip, LeaveRiskNote } from "@/components/ai/embed/leave-ai-ui";
+import { LEAVE_SLA_DAYS, isPastSla, leaveAgeDays } from "@/components/ai/embed/leave-ai";
 import { DataTable, NumCell } from "@/components/data-table";
 import { Button } from "@/components/ui/button";
 import { Alert, Avatar, Badge, Field, Hint, Textarea } from "@/components/ui/primitives";
@@ -68,7 +70,7 @@ const DECISIONS: {
 
 export default function LeaveApprovalsPage() {
   const loading = useFakeLoad();
-  const { persona, setApprovalCount } = useApp();
+  const { persona, markDecided } = useApp();
 
   const [rows, setRows] = React.useState<LeaveApplication[]>(LEAVE_APPLICATIONS);
   const [status, setStatus] = React.useState("pending");
@@ -82,9 +84,9 @@ export default function LeaveApprovalsPage() {
 
   const pendingCount = rows.filter((r) => r.status === "pending").length;
 
-  React.useEffect(() => {
-    setApprovalCount(pendingCount);
-  }, [pendingCount, setApprovalCount]);
+  /* The sidebar badge is the persona's cross-module inbox; deciding leave here
+     marks the matching inbox items decided, so /approvals agrees. */
+  const decided = (ids: string[]) => markDecided(ids.map((id) => `leave:${id}`));
 
   const filtered = React.useMemo(() => {
     const today = "2026-09-16";
@@ -95,6 +97,7 @@ export default function LeaveApprovalsPage() {
       if (range === "upcoming" && r.fromDate < today) return false;
       if (range === "past" && r.toDate >= today) return false;
       if (range === "backdated" && !r.isBackdated) return false;
+      if (range === "past_sla" && !isPastSla(r)) return false;
       return true;
     });
   }, [rows, status, department, typeCode, range]);
@@ -109,6 +112,7 @@ export default function LeaveApprovalsPage() {
   const submitDecision = () => {
     if (!active) return;
     const def = DECISIONS.find((d) => d.id === decision)!;
+    const wasPending = active.status === "pending";
     if (def.needsComment && comment.trim().length < 10) {
       setCommentError(
         `A comment of at least 10 characters is required to ${def.label.toLowerCase()} a request. You have ${comment.trim().length}.`,
@@ -132,11 +136,13 @@ export default function LeaveApprovalsPage() {
       description: `${active.typeName} · ${fmtDateShort(active.fromDate)}–${fmtDateShort(active.toDate)} · ${daysLabel(active.days)}`,
       tone: decision === "approved" ? "success" : decision === "rejected" ? "warning" : "info",
     });
+    if (wasPending) decided([active.id]);
     setActive(null);
   };
 
   const bulkDecide = (selected: LeaveApplication[], clear: () => void) => {
     const ids = new Set(selected.map((s) => s.id));
+    decided(selected.filter((s) => s.status === "pending").map((s) => s.id));
     setRows((rs) =>
       rs.map((r) =>
         ids.has(r.id)
@@ -225,14 +231,12 @@ export default function LeaveApprovalsPage() {
         accessorKey: "appliedOn",
         header: "Applied",
         cell: ({ row }) => {
-          const age = Math.round(
-            (new Date("2026-09-16").getTime() - new Date(row.original.appliedOn).getTime()) / 86400000,
-          );
+          const age = leaveAgeDays(row.original.appliedOn);
           return (
             <span className="tnum flex items-center gap-1">
               {fmtDateShort(row.original.appliedOn)}
-              {row.original.status === "pending" && age >= 4 && (
-                <Hint text={`Waiting ${age} days — past the 4-day decision SLA`}>
+              {isPastSla(row.original) && (
+                <Hint text={`Waiting ${age} days — past the ${LEAVE_SLA_DAYS * 24}-hour decision SLA (§7.2)`}>
                   <Badge variant="outline" className="border-warning/30 text-warning-fg">
                     <AlarmClock className="size-3" aria-hidden /> {age}d
                   </Badge>
@@ -248,9 +252,21 @@ export default function LeaveApprovalsPage() {
         cell: ({ row }) => <StatusBadge status={row.original.status} />,
       },
       {
+        id: "ai",
+        header: "AI check",
+        enableSorting: false,
+        cell: ({ row }) =>
+          row.original.status === "pending" ? (
+            <LeaveRiskChip application={row.original} />
+          ) : (
+            <span className="text-[11px] text-muted-foreground">—</span>
+          ),
+      },
+      {
         id: "actions",
         header: "Decision",
         enableSorting: false,
+        enableHiding: false,
         cell: ({ row }) =>
           row.original.status === "pending" ? (
             <span className="flex gap-1">
@@ -324,6 +340,7 @@ export default function LeaveApprovalsPage() {
                   mockAction(`Approved all ${pendingCount} pending requests`, {
                     description: "Every requester has been notified.",
                   });
+                  decided(rows.filter((r) => r.status === "pending").map((r) => r.id));
                 }}
               >
                 <CheckCheck /> Approve all pending
@@ -335,10 +352,11 @@ export default function LeaveApprovalsPage() {
 
       <StatRow cols={4}>
         <StatTile
-          label="Awaiting decision"
+          label="Leave requests awaiting decision"
           value={num(pendingCount)}
           icon={UserRoundCheck}
           tone={pendingCount > 0 ? "warning" : "good"}
+          hint="Leave only — the sidebar badge counts every module's approvals"
           onClick={() => setStatus("pending")}
         />
         <StatTile
@@ -356,21 +374,22 @@ export default function LeaveApprovalsPage() {
         />
         <StatTile
           label="Past SLA"
-          value={num(
-            rows.filter(
-              (r) =>
-                r.status === "pending" &&
-                (new Date("2026-09-16").getTime() - new Date(r.appliedOn).getTime()) / 86400000 >= 4,
-            ).length,
-          )}
+          value={num(rows.filter(isPastSla).length)}
           icon={AlarmClock}
-          tone="critical"
-          hint="Waiting more than 4 days"
-          onClick={() => setStatus("pending")}
+          tone={rows.some(isPastSla) ? "critical" : "good"}
+          hint={`Pending ${LEAVE_SLA_DAYS * 24} h or more — escalates to the skip-level manager (§7.2)`}
+          onClick={() => {
+            setStatus("pending");
+            setRange("past_sla");
+          }}
         />
       </StatRow>
 
-      <Section title="Request queue" bodyClassName="p-4">
+      <Section
+        title="Request queue"
+        description="The ✨ AI check flags balance, team overlap, Monday/Friday patterns and backdating. AI recommends; you decide."
+        bodyClassName="p-4"
+      >
         <DataTable
           columns={columns}
           data={filtered}
@@ -447,6 +466,7 @@ export default function LeaveApprovalsPage() {
                   { value: "upcoming", label: "Upcoming" },
                   { value: "past", label: "Already taken" },
                   { value: "backdated", label: "Backdated" },
+                  { value: "past_sla", label: "Past SLA" },
                 ]}
               />
             </>
@@ -510,6 +530,8 @@ export default function LeaveApprovalsPage() {
                     </div>
                   ))}
                 </dl>
+
+                {active.status === "pending" && <LeaveRiskNote application={active} />}
 
                 {active.isBackdated && (
                   <Alert tone="warning" title="Backdated request">

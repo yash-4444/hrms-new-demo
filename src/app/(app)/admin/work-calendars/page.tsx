@@ -355,6 +355,7 @@ export default function WorkCalendarsPage() {
         id: "actions",
         header: "Actions",
         enableSorting: false,
+        enableHiding: false,
         cell: ({ row }) => (
           <div className="flex items-center gap-1">
             <Button variant="ghost" size="sm" onClick={() => setDetail(row.original)}>

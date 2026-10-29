@@ -60,6 +60,7 @@ import {
   TableSkeleton,
   useFakeLoad,
 } from "@/components/shell/page";
+import { PayrollAnomalyScan } from "@/components/ai/embed/payroll-anomaly-scan";
 
 export default function PayRunDetailPage() {
   const loading = useFakeLoad();
@@ -114,6 +115,7 @@ export default function PayRunDetailPage() {
         header: "",
         size: 28,
         enableSorting: false,
+        enableHiding: false,
         cell: ({ row }) => (
           <button
             type="button"
@@ -200,6 +202,7 @@ export default function PayRunDetailPage() {
         id: "open",
         header: "",
         enableSorting: false,
+        enableHiding: false,
         cell: ({ row }) =>
           hasBreakdown ? (
             <Button variant="ghost" size="sm" asChild>
@@ -450,7 +453,7 @@ export default function PayRunDetailPage() {
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="flex flex-wrap items-center gap-1.5 text-xs font-medium">
-                    {e.title}
+                    {EXCEPTION_META[e.type].label}
                     <Badge variant="muted">{e.employeeName}</Badge>
                     <Badge variant="outline">{e.department}</Badge>
                   </p>
@@ -476,6 +479,9 @@ export default function PayRunDetailPage() {
           </ul>
         )}
       </Section>
+
+      {/* ------------------------------------------------ AI anomaly scan */}
+      <PayrollAnomalyScan runId={runId} hasBreakdown={hasBreakdown} hardExceptionCount={openExceptions.length} />
 
       {/* ------------------------------------------------------- employees */}
       <Section

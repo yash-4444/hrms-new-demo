@@ -25,6 +25,7 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
+  useDiscardGuard,
 } from "@/components/ui/overlays";
 
 /* ============================================================================
@@ -106,7 +107,7 @@ export function AssetAllocationDialog({
     handleSubmit,
     reset,
     watch,
-    formState: { errors, isSubmitting },
+    formState: { errors, isSubmitting, isDirty },
   } = useForm<AllocationValues>({
     resolver: zodResolver(schema),
     defaultValues: {
@@ -133,7 +134,9 @@ export function AssetAllocationDialog({
     setQuery("");
   }, [open, preselected, reset]);
 
-  const close = () => onOpenChange(false);
+  const close = React.useCallback(() => onOpenChange(false), [onOpenChange]);
+  /* Typing a search query counts as work in progress too. */
+  const { requestClose, guard } = useDiscardGuard(isDirty || query.trim() !== "", close);
 
   const assetId = watch("assetId");
   const notes = watch("notes") ?? "";
@@ -170,251 +173,254 @@ export function AssetAllocationDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={(v) => (v ? onOpenChange(true) : close())}>
-      <DialogContent size="lg">
-        <DialogHeader>
-          <DialogTitle>
-            {preselected.length > 1
-              ? `Allocate ${preselected.length} assets`
-              : "Allocate an asset"}
-          </DialogTitle>
-          <DialogDescription>
-            {preselected.length > 1
-              ? "All selected assets are handed to the same employee in one movement. The register updates the moment you confirm."
-              : "Records a handover against the asset register. The holder shows on the row and in their own My assets tab straight away."}
-          </DialogDescription>
-        </DialogHeader>
+    <>
+      <Dialog open={open} onOpenChange={(v) => (v ? onOpenChange(true) : requestClose())}>
+        <DialogContent size="lg">
+          <DialogHeader>
+            <DialogTitle>
+              {preselected.length > 1
+                ? `Allocate ${preselected.length} assets`
+                : "Allocate an asset"}
+            </DialogTitle>
+            <DialogDescription>
+              {preselected.length > 1
+                ? "All selected assets are handed to the same employee in one movement. The register updates the moment you confirm."
+                : "Records a handover against the asset register. The holder shows on the row and in their own My assets tab straight away."}
+            </DialogDescription>
+          </DialogHeader>
 
-        <form onSubmit={handleSubmit(onSubmit)}>
-          <DialogBody className="flex flex-col gap-3.5">
-            {preselected.length > 0 ? (
-              <div className="rounded-md border border-border bg-subtle p-2.5">
-                <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  Going out
-                </p>
-                <ul className="scrollbar-thin mt-1.5 flex max-h-28 flex-col gap-1 overflow-y-auto">
-                  {preselected.map((a) => (
-                    <li key={a.id} className="flex items-center gap-2 text-xs">
-                      <span className="font-mono font-medium text-foreground">{a.tag}</span>
-                      <span className="truncate text-muted-foreground">
-                        {a.make} {a.model}
-                      </span>
-                      <span className="ml-auto shrink-0 font-mono text-xs text-muted-foreground">
-                        {a.serial}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : (
+          <form onSubmit={handleSubmit(onSubmit)}>
+            <DialogBody className="flex flex-col gap-3.5">
+              {preselected.length > 0 ? (
+                <div className="rounded-md border border-border bg-subtle p-2.5">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Going out
+                  </p>
+                  <ul className="scrollbar-thin mt-1.5 flex max-h-28 flex-col gap-1 overflow-y-auto">
+                    {preselected.map((a) => (
+                      <li key={a.id} className="flex items-center gap-2 text-xs">
+                        <span className="font-mono font-medium text-foreground">{a.tag}</span>
+                        <span className="truncate text-muted-foreground">
+                          {a.make} {a.model}
+                        </span>
+                        <span className="ml-auto shrink-0 font-mono text-xs text-muted-foreground">
+                          {a.serial}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : (
+                <Field
+                  label="Asset"
+                  required
+                  error={errors.assetId?.message}
+                  hint={`${stock.length} assets are sitting in stock`}
+                >
+                  <Controller
+                    control={control}
+                    name="assetId"
+                    render={({ field }) => {
+                      const chosen = stock.find((a) => a.id === field.value);
+                      return (
+                        <Select value={field.value} onValueChange={field.onChange}>
+                          <SelectTrigger aria-label="Asset" aria-invalid={!!errors.assetId}>
+                            <span className="truncate">
+                              {chosen
+                                ? `${chosen.tag} · ${chosen.make} ${chosen.model}`
+                                : "Pick from stock"}
+                            </span>
+                          </SelectTrigger>
+                          <SelectContent>
+                            {stock.map((a) => (
+                              <SelectItem key={a.id} value={a.id}>
+                                {a.tag} · {a.make} {a.model} · {a.location}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      );
+                    }}
+                  />
+                </Field>
+              )}
+
               <Field
-                label="Asset"
+                label="Allocate to"
                 required
-                error={errors.assetId?.message}
-                hint={`${stock.length} assets are sitting in stock`}
+                error={errors.employeeCode?.message}
+                hint="Search by name, employee code, designation or location"
               >
                 <Controller
                   control={control}
-                  name="assetId"
+                  name="employeeCode"
                   render={({ field }) => {
-                    const chosen = stock.find((a) => a.id === field.value);
+                    const chosen = employeeByCode(field.value);
                     return (
-                      <Select value={field.value} onValueChange={field.onChange}>
-                        <SelectTrigger aria-label="Asset" aria-invalid={!!errors.assetId}>
-                          <span className="truncate">
-                            {chosen
-                              ? `${chosen.tag} · ${chosen.make} ${chosen.model}`
-                              : "Pick from stock"}
-                          </span>
-                        </SelectTrigger>
-                        <SelectContent>
-                          {stock.map((a) => (
-                            <SelectItem key={a.id} value={a.id}>
-                              {a.tag} · {a.make} {a.model} · {a.location}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <div className="flex flex-col gap-1.5">
+                        <div className="relative">
+                          <Search
+                            className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
+                            aria-hidden
+                          />
+                          <Input
+                            value={query}
+                            onChange={(e) => setQuery(e.target.value)}
+                            placeholder="Search the active directory…"
+                            aria-label="Search employees"
+                            className="pl-8"
+                          />
+                        </div>
+                        <ul
+                          aria-label="Matching employees"
+                          className="scrollbar-thin flex max-h-44 flex-col overflow-y-auto rounded-md border border-border"
+                        >
+                          {shown.length === 0 && (
+                            <li className="px-2.5 py-3 text-center text-xs text-muted-foreground">
+                              No active employee matches “{query.trim()}”.
+                            </li>
+                          )}
+                          {shown.map((e) => {
+                            const active = field.value === e.code;
+                            return (
+                              <li key={e.code}>
+                                <button
+                                  type="button"
+                                  onClick={() => field.onChange(e.code)}
+                                  aria-pressed={active}
+                                  className={cn(
+                                    "flex w-full items-center gap-2 border-b border-border px-2.5 py-1.5 text-left last:border-0",
+                                    "transition-colors hover:bg-muted focus-visible:bg-muted focus-visible:outline-none",
+                                    active && "bg-primary-soft/50",
+                                  )}
+                                >
+                                  <Avatar name={e.name} size={24} />
+                                  <span className="min-w-0 flex-1">
+                                    <span className="block truncate text-xs font-medium text-foreground">
+                                      {e.name}
+                                    </span>
+                                    <span className="block truncate text-xs text-muted-foreground">
+                                      {e.code} · {e.designation} · {e.location}
+                                    </span>
+                                  </span>
+                                  {active && (
+                                    <Check className="size-3.5 shrink-0 text-primary" aria-hidden />
+                                  )}
+                                </button>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                        {matches.length > shown.length && (
+                          <p className="tnum text-xs text-muted-foreground">
+                            Showing {shown.length} of {matches.length} matches — keep typing to narrow
+                            it down.
+                          </p>
+                        )}
+                        {chosen && (
+                          <p className="text-xs text-muted-foreground">
+                            Handing over to{" "}
+                            <span className="font-medium text-foreground">{chosen.name}</span> ·{" "}
+                            {chosen.designation}, {chosen.location}.
+                          </p>
+                        )}
+                      </div>
                     );
                   }}
                 />
               </Field>
-            )}
 
-            <Field
-              label="Allocate to"
-              required
-              error={errors.employeeCode?.message}
-              hint="Search by name, employee code, designation or location"
-            >
-              <Controller
-                control={control}
-                name="employeeCode"
-                render={({ field }) => {
-                  const chosen = employeeByCode(field.value);
-                  return (
-                    <div className="flex flex-col gap-1.5">
-                      <div className="relative">
-                        <Search
-                          className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
-                          aria-hidden
-                        />
-                        <Input
-                          value={query}
-                          onChange={(e) => setQuery(e.target.value)}
-                          placeholder="Search the active directory…"
-                          aria-label="Search employees"
-                          className="pl-8"
-                        />
-                      </div>
-                      <ul
-                        aria-label="Matching employees"
-                        className="scrollbar-thin flex max-h-44 flex-col overflow-y-auto rounded-md border border-border"
-                      >
-                        {shown.length === 0 && (
-                          <li className="px-2.5 py-3 text-center text-xs text-muted-foreground">
-                            No active employee matches “{query.trim()}”.
-                          </li>
-                        )}
-                        {shown.map((e) => {
-                          const active = field.value === e.code;
-                          return (
-                            <li key={e.code}>
-                              <button
-                                type="button"
-                                onClick={() => field.onChange(e.code)}
-                                aria-pressed={active}
-                                className={cn(
-                                  "flex w-full items-center gap-2 border-b border-border px-2.5 py-1.5 text-left last:border-0",
-                                  "transition-colors hover:bg-muted focus-visible:bg-muted focus-visible:outline-none",
-                                  active && "bg-primary-soft/50",
-                                )}
-                              >
-                                <Avatar name={e.name} size={24} />
-                                <span className="min-w-0 flex-1">
-                                  <span className="block truncate text-xs font-medium text-foreground">
-                                    {e.name}
-                                  </span>
-                                  <span className="block truncate text-xs text-muted-foreground">
-                                    {e.code} · {e.designation} · {e.location}
-                                  </span>
-                                </span>
-                                {active && (
-                                  <Check className="size-3.5 shrink-0 text-primary" aria-hidden />
-                                )}
-                              </button>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                      {matches.length > shown.length && (
-                        <p className="tnum text-xs text-muted-foreground">
-                          Showing {shown.length} of {matches.length} matches — keep typing to narrow
-                          it down.
-                        </p>
-                      )}
-                      {chosen && (
-                        <p className="text-xs text-muted-foreground">
-                          Handing over to{" "}
-                          <span className="font-medium text-foreground">{chosen.name}</span> ·{" "}
-                          {chosen.designation}, {chosen.location}.
-                        </p>
-                      )}
-                    </div>
-                  );
-                }}
-              />
-            </Field>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <Field
+                  label="Allocation date"
+                  htmlFor="al-date"
+                  required
+                  error={errors.allocationDate?.message}
+                >
+                  <Input
+                    id="al-date"
+                    type="date"
+                    max={DEMO_TODAY}
+                    aria-invalid={!!errors.allocationDate}
+                    {...register("allocationDate")}
+                  />
+                </Field>
 
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <Field label="Condition at handover" required error={errors.condition?.message}>
+                  <Controller
+                    control={control}
+                    name="condition"
+                    render={({ field }) => (
+                      <Select value={field.value} onValueChange={field.onChange}>
+                        <SelectTrigger aria-label="Condition at handover">
+                          <span className="truncate">{field.value}</span>
+                        </SelectTrigger>
+                        <SelectContent>
+                          {ASSET_CONDITION_OPTIONS.map((c) => (
+                            <SelectItem key={c} value={c}>
+                              {c}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  />
+                </Field>
+              </div>
+
               <Field
-                label="Allocation date"
-                htmlFor="al-date"
-                required
-                error={errors.allocationDate?.message}
+                label="Location / handover notes"
+                htmlFor="al-notes"
+                error={errors.notes?.message}
+                hint={
+                  <span className="tnum">
+                    Optional · {notes.length} / 240 characters
+                  </span>
+                }
               >
-                <Input
-                  id="al-date"
-                  type="date"
-                  max={DEMO_TODAY}
-                  aria-invalid={!!errors.allocationDate}
-                  {...register("allocationDate")}
+                <Textarea
+                  id="al-notes"
+                  rows={3}
+                  placeholder="Collected from the 7F IT store. Charger, 65W adapter and sleeve issued with the machine."
+                  aria-invalid={!!errors.notes}
+                  {...register("notes")}
                 />
               </Field>
 
-              <Field label="Condition at handover" required error={errors.condition?.message}>
+              <Field label="Acknowledgement" required error={errors.acknowledged?.message}>
                 <Controller
                   control={control}
-                  name="condition"
+                  name="acknowledged"
                   render={({ field }) => (
-                    <Select value={field.value} onValueChange={field.onChange}>
-                      <SelectTrigger aria-label="Condition at handover">
-                        <span className="truncate">{field.value}</span>
-                      </SelectTrigger>
-                      <SelectContent>
-                        {ASSET_CONDITION_OPTIONS.map((c) => (
-                          <SelectItem key={c} value={c}>
-                            {c}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <label className="flex cursor-pointer items-start gap-2 rounded-md border border-border bg-subtle p-2.5">
+                      <Checkbox
+                        checked={field.value}
+                        onCheckedChange={(v) => field.onChange(v === true)}
+                        aria-invalid={!!errors.acknowledged}
+                        className="mt-0.5"
+                      />
+                      <span className="text-xs leading-relaxed text-foreground">
+                        The employee has physically received the asset and accepted the
+                        acceptable-use policy.
+                      </span>
+                    </label>
                   )}
                 />
               </Field>
-            </div>
+            </DialogBody>
 
-            <Field
-              label="Location / handover notes"
-              htmlFor="al-notes"
-              error={errors.notes?.message}
-              hint={
-                <span className="tnum">
-                  Optional · {notes.length} / 240 characters
-                </span>
-              }
-            >
-              <Textarea
-                id="al-notes"
-                rows={3}
-                placeholder="Collected from the 7F IT store. Charger, 65W adapter and sleeve issued with the machine."
-                aria-invalid={!!errors.notes}
-                {...register("notes")}
-              />
-            </Field>
-
-            <Field label="Acknowledgement" required error={errors.acknowledged?.message}>
-              <Controller
-                control={control}
-                name="acknowledged"
-                render={({ field }) => (
-                  <label className="flex cursor-pointer items-start gap-2 rounded-md border border-border bg-subtle p-2.5">
-                    <Checkbox
-                      checked={field.value}
-                      onCheckedChange={(v) => field.onChange(v === true)}
-                      aria-invalid={!!errors.acknowledged}
-                      className="mt-0.5"
-                    />
-                    <span className="text-xs leading-relaxed text-foreground">
-                      The employee has physically received the asset and accepted the
-                      acceptable-use policy.
-                    </span>
-                  </label>
-                )}
-              />
-            </Field>
-          </DialogBody>
-
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={close}>
-              Cancel
-            </Button>
-            <Button type="submit" loading={isSubmitting}>
-              {targets.length > 1 ? `Allocate ${targets.length} assets` : "Allocate asset"}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={requestClose}>
+                Cancel
+              </Button>
+              <Button type="submit" loading={isSubmitting}>
+                {targets.length > 1 ? `Allocate ${targets.length} assets` : "Allocate asset"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+      {guard}
+    </>
   );
 }

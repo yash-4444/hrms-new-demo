@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
+import type { ColumnDef } from "@tanstack/react-table";
 import {
   Briefcase,
   Eye,
@@ -25,7 +26,11 @@ import {
   requisitionByCode,
   type JobPosting,
 } from "@/mock/hiring";
-import { mockAction } from "@/components/app-state";
+import { mockAction, useApp } from "@/components/app-state";
+import { jobSlug } from "@/mock/lifecycle-public";
+import { JobJdRewrite } from "@/components/ai/embed/hiring-jd";
+import { DataTable } from "@/components/data-table";
+import { ViewToggle, type ListView } from "@/components/people/view-toggle";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -35,6 +40,7 @@ import {
   Gated,
   PageBody,
   PageHeader,
+  TableSkeleton,
   useFakeLoad,
 } from "@/components/shell/page";
 import {
@@ -74,6 +80,7 @@ const PUBLISHED_OPTIONS = [
 
 export default function JobsPage() {
   const loading = useFakeLoad();
+  const { can } = useApp();
 
   const [jobs, setJobs] = React.useState<JobPosting[]>(() => JOBS.map((j) => ({ ...j })));
   const [dept, setDept] = React.useState("all");
@@ -81,8 +88,13 @@ export default function JobsPage() {
   const [published, setPublished] = React.useState("all");
   const [query, setQuery] = React.useState("");
 
+  const [view, setView] = React.useState<ListView>("cards");
+
   const [preview, setPreview] = React.useState<JobPosting | null>(null);
   const [unpublishTarget, setUnpublishTarget] = React.useState<JobPosting | null>(null);
+  const [bulkUnpublish, setBulkUnpublish] = React.useState<{ rows: JobPosting[]; clear: () => void } | null>(
+    null,
+  );
 
   const filtered = React.useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -130,16 +142,182 @@ export default function JobsPage() {
     });
   };
 
+  const publishMany = (rows: JobPosting[]) => {
+    const ids = new Set(rows.map((j) => j.id));
+    setJobs((prev) => prev.map((j) => (ids.has(j.id) ? { ...j, published: true } : j)));
+    mockAction(`${rows.length} posting${rows.length === 1 ? "" : "s"} published`, {
+      description: "Live on the careers site and on each posting's job boards.",
+    });
+  };
+
+  const unpublishMany = (rows: JobPosting[]) => {
+    const ids = new Set(rows.map((j) => j.id));
+    setJobs((prev) => prev.map((j) => (ids.has(j.id) ? { ...j, published: false } : j)));
+    mockAction(`${rows.length} posting${rows.length === 1 ? "" : "s"} unpublished`, {
+      description: "Withdrawn from the careers site. Existing applicants are unaffected.",
+      tone: "warning",
+    });
+  };
+
   const copyLink = async (job: JobPosting) => {
     const origin = typeof window === "undefined" ? "" : window.location.origin;
-    const url = `${origin}/careers#${job.id}`;
+    const url = `${origin}${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/careers/jobs/${jobSlug(job)}`;
     try {
       await navigator.clipboard.writeText(url);
-      mockAction("Link copied", { description: url });
+      mockAction("Link copied", {
+        description: job.published ? url : `${url} — the page goes live once the posting is published.`,
+        tone: job.published ? "success" : "info",
+      });
     } catch {
       mockAction("Copy the link manually", { description: url, tone: "info" });
     }
   };
+
+  const filterControls = (
+    <>
+      <div className="relative">
+        <Search
+          className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
+          aria-hidden
+        />
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search title, code or location…"
+          aria-label="Search job postings"
+          className="h-7 w-[230px] rounded-md border border-input bg-card pl-7 pr-6 text-xs placeholder:text-muted-foreground focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/25"
+        />
+        {query && (
+          <button
+            type="button"
+            aria-label="Clear search"
+            onClick={() => setQuery("")}
+            className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+          >
+            <X className="size-3" />
+          </button>
+        )}
+      </div>
+      <FilterSelect
+        label="Dept"
+        value={dept}
+        onValueChange={setDept}
+        options={DEPT_OPTIONS}
+        allLabel="All departments"
+      />
+      <FilterSelect
+        label="Location"
+        value={branch}
+        onValueChange={setBranch}
+        options={BRANCH_OPTIONS}
+        allLabel="All locations"
+        width="w-[150px]"
+      />
+      <FilterSelect
+        label="State"
+        value={published}
+        onValueChange={setPublished}
+        options={PUBLISHED_OPTIONS}
+        allLabel="Published & draft"
+        width="w-[170px]"
+      />
+      {dirty && (
+        <Button size="sm" variant="ghost" onClick={clearFilters}>
+          Clear
+        </Button>
+      )}
+    </>
+  );
+  const viewToggle = <ViewToggle view={view} onChange={setView} />;
+
+  /* Table view — the same postings, with sort, columns, selection and Export. */
+  const columns: ColumnDef<JobPosting, unknown>[] = [
+    {
+      id: "title",
+      header: "Posting",
+      accessorKey: "title",
+      enableHiding: false,
+      cell: ({ row }) => (
+        <div className="min-w-0">
+          <p className="font-medium text-foreground">{row.original.title}</p>
+          <p className="font-mono text-[11px] text-muted-foreground">{row.original.reqCode}</p>
+        </div>
+      ),
+    },
+    { id: "department", header: "Department", accessorFn: (j) => deptLabel(j.departmentId) },
+    { id: "location", header: "Location", accessorFn: (j) => branchById(j.branchId)?.city ?? j.location },
+    { id: "workMode", header: "Work mode", accessorKey: "workMode" },
+    {
+      id: "state",
+      header: "State",
+      accessorFn: (j) => (j.published ? "Published" : "Draft"),
+      cell: ({ row }) => (
+        <StatusBadge
+          status={row.original.published ? "open" : "closed"}
+          label={row.original.published ? "Published" : "Draft"}
+        />
+      ),
+    },
+    {
+      id: "applicants",
+      header: "Applicants",
+      accessorFn: (j) => candidatesForReq(j.reqCode).length,
+      cell: ({ getValue }) => <span className="tnum block text-right">{num(getValue() as number)}</span>,
+    },
+    {
+      id: "views",
+      header: "Views",
+      accessorKey: "views",
+      cell: ({ row }) => <span className="tnum block text-right">{num(row.original.views)}</span>,
+    },
+    {
+      id: "posted",
+      header: "Posted",
+      accessorKey: "postedDate",
+      cell: ({ row }) => <span className="tnum whitespace-nowrap">{fmtDate(row.original.postedDate)}</span>,
+    },
+    {
+      id: "recruiter",
+      header: "Recruiter",
+      accessorFn: (j) => {
+        const req = requisitionByCode(j.reqCode);
+        return (req && employeeByCode(req.recruiterCode)?.name) ?? "—";
+      },
+    },
+    { id: "channels", header: "Channels", accessorFn: (j) => j.channels.join(", ") },
+    {
+      id: "actions",
+      header: "",
+      enableSorting: false,
+      enableHiding: false,
+      cell: ({ row }) => {
+        const j = row.original;
+        return (
+          <span className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+            <Gated menuKey="hiring.jobs" action="E">
+              {j.published ? (
+                <Button size="sm" variant="outline" onClick={() => setUnpublishTarget(j)}>
+                  Unpublish
+                </Button>
+              ) : (
+                <Button size="sm" onClick={() => publish(j)}>
+                  <Send /> Publish
+                </Button>
+              )}
+            </Gated>
+            <Button size="icon-sm" variant="ghost" onClick={() => copyLink(j)} aria-label={`Copy link to ${j.title}`}>
+              <Link2 />
+            </Button>
+            <Button size="icon-sm" variant="ghost" asChild>
+              <Link href={`/candidates?req=${j.reqCode}`} aria-label={`Open the pipeline for ${j.title}`}>
+                <Users />
+              </Link>
+            </Button>
+          </span>
+        );
+      },
+    },
+  ];
 
   return (
     <PageBody>
@@ -148,77 +326,80 @@ export default function JobsPage() {
         description={`${liveCount} of ${jobs.length} postings are live on the careers site, carrying ${num(totalApplicants)} applicants in total.`}
         actions={
           <Button size="sm" asChild>
-            <a href="/careers" target="_blank" rel="noreferrer">
+            <Link href="/careers" target="_blank" rel="noreferrer">
               <ExternalLink /> View careers site
-            </a>
+            </Link>
           </Button>
         }
       />
 
       {/* --------------------------------------------------------- filters */}
-      <div className="flex flex-wrap items-center gap-1.5">
-        <div className="relative">
-          <Search
-            className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
-            aria-hidden
-          />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search title, code or location…"
-            aria-label="Search job postings"
-            className="h-7 w-[230px] rounded-md border border-input bg-card pl-7 pr-6 text-xs placeholder:text-muted-foreground focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/25"
-          />
-          {query && (
-            <button
-              type="button"
-              aria-label="Clear search"
-              onClick={() => setQuery("")}
-              className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-            >
-              <X className="size-3" />
-            </button>
-          )}
+      {view === "cards" && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {filterControls}
+          <span className="tnum ml-auto text-xs text-muted-foreground">
+            {filtered.length} of {jobs.length} postings
+          </span>
+          {viewToggle}
         </div>
-        <FilterSelect
-          label="Dept"
-          value={dept}
-          onValueChange={setDept}
-          options={DEPT_OPTIONS}
-          allLabel="All departments"
-        />
-        <FilterSelect
-          label="Location"
-          value={branch}
-          onValueChange={setBranch}
-          options={BRANCH_OPTIONS}
-          allLabel="All locations"
-          width="w-[150px]"
-        />
-        <FilterSelect
-          label="State"
-          value={published}
-          onValueChange={setPublished}
-          options={PUBLISHED_OPTIONS}
-          allLabel="Published & draft"
-          width="w-[170px]"
-        />
-        {dirty && (
-          <Button size="sm" variant="ghost" onClick={clearFilters}>
-            Clear
-          </Button>
-        )}
-        <span className="tnum ml-auto text-xs text-muted-foreground">
-          {filtered.length} of {jobs.length} postings
-        </span>
-      </div>
+      )}
 
-      {/* ----------------------------------------------------------- grid */}
+      {/* ------------------------------------------------- grid or table */}
       {loading ? (
-        <>
-          <CardsSkeleton count={4} height={190} />
-          <CardsSkeleton count={4} height={190} />
-        </>
+        view === "table" ? (
+          <TableSkeleton />
+        ) : (
+          <>
+            <CardsSkeleton count={4} height={190} />
+            <CardsSkeleton count={4} height={190} />
+          </>
+        )
+      ) : view === "table" ? (
+        <DataTable<JobPosting>
+          columns={columns}
+          data={filtered}
+          getRowId={(j) => j.id}
+          filters={filterControls}
+          toolbar={viewToggle}
+          onRowClick={setPreview}
+          enableSelection
+          exportName="job-postings"
+          emptyIcon={Briefcase}
+          emptyTitle="No postings match these filters"
+          emptyDescription="Every approved requisition gets a posting. Loosen a filter to see the rest."
+          emptyAction={
+            <Button size="sm" variant="outline" onClick={clearFilters}>
+              Clear filters
+            </Button>
+          }
+          bulkActions={(rows, clear) => (
+            <>
+              <Gated menuKey="hiring.jobs" action="E">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={rows.every((j) => j.published)}
+                  onClick={() => {
+                    publishMany(rows.filter((j) => !j.published));
+                    clear();
+                  }}
+                >
+                  <Send /> Publish
+                </Button>
+              </Gated>
+              <Gated menuKey="hiring.jobs" action="E">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={rows.every((j) => !j.published)}
+                  onClick={() => setBulkUnpublish({ rows: rows.filter((j) => j.published), clear })}
+                >
+                  Unpublish
+                </Button>
+              </Gated>
+            </>
+          )}
+        />
       ) : filtered.length === 0 ? (
         <EmptyState
           icon={Briefcase}
@@ -268,6 +449,16 @@ export default function JobsPage() {
               </SheetHeader>
 
               <SheetBody className="flex flex-col gap-4">
+                <JobJdRewrite
+                  key={preview.id}
+                  job={preview}
+                  canEdit={can("hiring.jobs", "E")}
+                  onApply={(patch) => {
+                    setJobs((prev) => prev.map((j) => (j.id === preview.id ? { ...j, ...patch } : j)));
+                    setPreview((p) => (p && p.id === preview.id ? { ...p, ...patch } : p));
+                  }}
+                />
+
                 <p className="text-sm leading-relaxed text-foreground">{preview.summary}</p>
 
                 <section>
@@ -377,6 +568,21 @@ export default function JobsPage() {
         onConfirm={() => {
           if (unpublishTarget) unpublish(unpublishTarget);
           setUnpublishTarget(null);
+        }}
+      />
+      <ConfirmDialog
+        open={!!bulkUnpublish}
+        onOpenChange={(v) => !v && setBulkUnpublish(null)}
+        destructive
+        title={`Unpublish ${bulkUnpublish?.rows.length ?? 0} posting${bulkUnpublish?.rows.length === 1 ? "" : "s"}?`}
+        description="They are removed from the careers site and every job board. Candidates already in the pipeline keep their applications."
+        confirmLabel="Unpublish"
+        onConfirm={() => {
+          if (bulkUnpublish) {
+            unpublishMany(bulkUnpublish.rows);
+            bulkUnpublish.clear();
+          }
+          setBulkUnpublish(null);
         }}
       />
     </PageBody>

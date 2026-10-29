@@ -2,12 +2,13 @@
 
 import * as React from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import {
   addMonths,
+  differenceInCalendarMonths,
   eachDayOfInterval,
   endOfMonth,
   format,
-  isSameDay,
   parseISO,
   startOfMonth,
 } from "date-fns";
@@ -40,12 +41,42 @@ import { PageBody, PageHeader, Section, useFakeLoad } from "@/components/shell/p
    and the legend spells out every combination.
    ========================================================================== */
 
+/** `?month=YYYY-MM` → offset from the demo month; anything malformed is month 0. */
+function offsetFromParam(value: string | null) {
+  if (!value || !/^\d{4}-\d{2}$/.test(value)) return 0;
+  return differenceInCalendarMonths(parseISO(`${value}-01`), parseISO(DEMO_TODAY));
+}
+
+/** `?dept=<id>` — only a department that exists, otherwise "all". */
+function deptFromParam(value: string | null) {
+  return value && DEPARTMENTS.some((d) => d.id === value) ? value : "all";
+}
+
 export default function LeaveCalendarPage() {
+  return (
+    <React.Suspense fallback={<Skeleton className="h-[480px]" />}>
+      <LeaveCalendar />
+    </React.Suspense>
+  );
+}
+
+function LeaveCalendar() {
   const loading = useFakeLoad();
-  const [monthOffset, setMonthOffset] = React.useState(0);
-  const [department, setDepartment] = React.useState("all");
+  const searchParams = useSearchParams();
+  const spKey = searchParams.toString();
+  const [monthOffset, setMonthOffset] = React.useState(() => offsetFromParam(searchParams.get("month")));
+  const [department, setDepartment] = React.useState(() => deptFromParam(searchParams.get("dept")));
   const [typeCode, setTypeCode] = React.useState("all");
   const [selected, setSelected] = React.useState<{ code: string; iso: string } | null>(null);
+
+  /* A deep link (leave detail sheet, dashboard) re-seeds the month and department. */
+  const [seenKey, setSeenKey] = React.useState(spKey);
+  if (seenKey !== spKey) {
+    const p = new URLSearchParams(spKey);
+    setSeenKey(spKey);
+    setMonthOffset(offsetFromParam(p.get("month")));
+    setDepartment(deptFromParam(p.get("dept")));
+  }
 
   const month = React.useMemo(
     () => startOfMonth(addMonths(parseISO(DEMO_TODAY), monthOffset)),

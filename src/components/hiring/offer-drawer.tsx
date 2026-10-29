@@ -52,6 +52,7 @@ import {
   SheetFooter,
   SheetHeader,
   SheetTitle,
+  useDiscardGuard,
 } from "@/components/ui/overlays";
 import { CtcBreakup } from "./ctc-breakup";
 
@@ -128,7 +129,7 @@ function ReviseCtcDialog({
     handleSubmit,
     reset,
     watch,
-    formState: { errors },
+    formState: { errors, isDirty },
   } = useForm<ReviseValues>({
     resolver: zodResolver(schema),
     defaultValues: { ctc: offer.ctc, reason: "" },
@@ -147,84 +148,88 @@ function ReviseCtcDialog({
     onRevise(Math.round(values.ctc), values.reason);
     onOpenChange(false);
   });
+  const { requestClose, guard } = useDiscardGuard(isDirty, () => onOpenChange(false));
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent size="sm">
-        <DialogHeader>
-          <DialogTitle>Revise offered CTC</DialogTitle>
-          <DialogDescription>
-            {offer.candidateName} · {offer.role} · band{" "}
-            <span className="tnum">
-              {inr(min, { decimals: false })} – {inr(max, { decimals: false })}
-            </span>
-          </DialogDescription>
-        </DialogHeader>
-        <form onSubmit={onSubmit}>
-          <DialogBody className="flex flex-col gap-3">
-            <Field
-              label="Revised annual CTC"
-              htmlFor="revise-ctc"
-              required
-              error={errors.ctc?.message}
-              hint="The full structure is recomputed from this figure."
-            >
-              <div className="relative">
-                <IndianRupee
-                  className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
-                  aria-hidden
-                />
+    <>
+      <Dialog open={open} onOpenChange={(v) => (v ? onOpenChange(true) : requestClose())}>
+        <DialogContent size="sm">
+          <DialogHeader>
+            <DialogTitle>Revise offered CTC</DialogTitle>
+            <DialogDescription>
+              {offer.candidateName} · {offer.role} · band{" "}
+              <span className="tnum">
+                {inr(min, { decimals: false })} – {inr(max, { decimals: false })}
+              </span>
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={onSubmit}>
+            <DialogBody className="flex flex-col gap-3">
+              <Field
+                label="Revised annual CTC"
+                htmlFor="revise-ctc"
+                required
+                error={errors.ctc?.message}
+                hint="The full structure is recomputed from this figure."
+              >
+                <div className="relative">
+                  <IndianRupee
+                    className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
+                    aria-hidden
+                  />
+                  <Input
+                    id="revise-ctc"
+                    type="number"
+                    step={1000}
+                    className="tnum pl-8"
+                    aria-invalid={!!errors.ctc}
+                    {...register("ctc", { valueAsNumber: true })}
+                  />
+                </div>
+              </Field>
+
+              {delta !== 0 && !errors.ctc && (
+                <p className="tnum text-xs text-muted-foreground">
+                  {delta > 0 ? "Increase" : "Reduction"} of{" "}
+                  <span className="font-medium text-foreground">
+                    {inr(Math.abs(delta), { decimals: false })}
+                  </span>{" "}
+                  ({((Math.abs(delta) / offer.ctc) * 100).toFixed(1)}%) against the current offer.
+                </p>
+              )}
+
+              {overBand && (
+                <Alert tone="warning" icon={TriangleAlert} title="Above the approved band">
+                  This revision returns the offer to <strong>Pending approval</strong> and needs a
+                  fresh sign-off from HR and Finance before it can be released again.
+                </Alert>
+              )}
+
+              <Field
+                label="Reason for the revision"
+                htmlFor="revise-reason"
+                required
+                error={errors.reason?.message}
+              >
                 <Input
-                  id="revise-ctc"
-                  type="number"
-                  step={1000}
-                  className="tnum pl-8"
-                  aria-invalid={!!errors.ctc}
-                  {...register("ctc", { valueAsNumber: true })}
+                  id="revise-reason"
+                  placeholder="Counter-offer at the current employer; matched on fixed component"
+                  aria-invalid={!!errors.reason}
+                  {...register("reason")}
                 />
-              </div>
-            </Field>
-
-            {delta !== 0 && !errors.ctc && (
-              <p className="tnum text-xs text-muted-foreground">
-                {delta > 0 ? "Increase" : "Reduction"} of{" "}
-                <span className="font-medium text-foreground">
-                  {inr(Math.abs(delta), { decimals: false })}
-                </span>{" "}
-                ({((Math.abs(delta) / offer.ctc) * 100).toFixed(1)}%) against the current offer.
-              </p>
-            )}
-
-            {overBand && (
-              <Alert tone="warning" icon={TriangleAlert} title="Above the approved band">
-                This revision returns the offer to <strong>Pending approval</strong> and needs a
-                fresh sign-off from HR and Finance before it can be released again.
-              </Alert>
-            )}
-
-            <Field
-              label="Reason for the revision"
-              htmlFor="revise-reason"
-              required
-              error={errors.reason?.message}
-            >
-              <Input
-                id="revise-reason"
-                placeholder="Counter-offer at the current employer; matched on fixed component"
-                aria-invalid={!!errors.reason}
-                {...register("reason")}
-              />
-            </Field>
-          </DialogBody>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
-            <Button type="submit">Revise and recompute</Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+              </Field>
+            </DialogBody>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={requestClose}>
+                Cancel
+              </Button>
+              <Button type="submit">Revise and recompute</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+      {guard}
+    </>
   );
 }
 

@@ -9,7 +9,8 @@ import {
   deptName,
   holidayOn,
 } from "./org";
-import { ATTENDANCE_SUBSET, EMPLOYEES, employeeByCode, type Employee } from "./employees";
+import { ATTENDANCE_SUBSET, EMPLOYEES, VIKRAM_TEAM_CODES, employeeByCode, type Employee } from "./employees";
+import { PERSONAS } from "@/lib/rbac";
 
 /* ============================================================================
    Time & Attendance fixtures.
@@ -313,9 +314,35 @@ const CROSS_DEPT_SAMPLE: string[] = (() => {
   return out;
 })();
 
+/** Every switchable persona's own employee record — each one sees their own punches. */
+const PERSONA_EMPLOYEE_CODES = PERSONAS.map((p) => p.employeeId);
+
 export const ATTENDANCE_CODES: string[] = Array.from(
-  new Set([...ATTENDANCE_SUBSET, ...PERSONA_CODES, ...CROSS_DEPT_SAMPLE]),
+  /* Vikram's reportees go last so earlier codes keep their seeded draws; the
+     manager persona's "Team today" card then reads real records for all 8. */
+  new Set([...ATTENDANCE_SUBSET, ...PERSONA_CODES, ...CROSS_DEPT_SAMPLE, ...PERSONA_EMPLOYEE_CODES, ...VIKRAM_TEAM_CODES]),
 );
+
+/**
+ * Today's punch-in for whoever is signed in — the same 09:36 anchor every punch
+ * timer uses (DEMO_PUNCH_IN in components/app-state.tsx). One open pair from it,
+ * so the punch card, the dashboard and this record agree to the minute.
+ */
+const PERSONA_PUNCH_IN = "09:36";
+
+/**
+ * Lateness is a habit, not a coin toss. About one in ten people is a chronic
+ * late-comer (late on half their days), three in ten are late now and then,
+ * and the rest almost never — so roughly 10% of the people at work on a given
+ * day are late, and a month's late list is dominated by the same few names.
+ * Personas are never chronic: the demo's own record should not lead with it.
+ */
+function lateRateFor(code: string) {
+  const r = mulberry32(seedFor(code) + 4243)();
+  if (r < 0.1 && !PERSONA_EMPLOYEE_CODES.includes(code)) return 0.5;
+  if (r < 0.4) return 0.15;
+  return 0.015;
+}
 
 const countryOf = (emp: Employee): "IN" | "US" =>
   (branchById(emp.branchId)?.country as "IN" | "US" | null) ?? "IN";
@@ -324,9 +351,9 @@ const seedFor = (code: string) => 7_000_000 + Number(code.slice(4)) * 131;
 
 function buildDaysFor(emp: Employee): AttendanceDay[] {
   const rng = mulberry32(seedFor(emp.code));
+  const lateRate = lateRateFor(emp.code);
   const country = countryOf(emp);
   const cfg = settingsForCountry(country);
-  const shiftStart = clockToMinutes(cfg.shiftStart);
   const shiftEnd = clockToMinutes(cfg.shiftEnd);
   const threshold = clockToMinutes(cfg.lateThreshold);
   const devices = country === "US" ? DEVICES_US : DEVICES_IN;
@@ -365,6 +392,31 @@ function buildDaysFor(emp: Employee): AttendanceDay[] {
     }
 
     const isToday = date === DEMO_TODAY;
+
+    /* --- today, for a persona: one open pair from the shared anchor --- */
+    if (isToday && PERSONA_EMPLOYEE_CODES.includes(emp.code)) {
+      const openStart = clockToMinutes(PERSONA_PUNCH_IN);
+      const pair: PunchPair = {
+        in: at(date, openStart),
+        out: null,
+        minutes: Math.max(0, NOW_MINUTES - openStart),
+        source: "Biometric",
+        device: devices[0],
+      };
+      out.push({
+        ...base,
+        state: "present",
+        punches: [pair],
+        firstIn: pair.in,
+        workedMinutes: pair.minutes,
+        lateByMinutes: Math.max(0, openStart - threshold),
+        late: openStart - threshold > cfg.graceMinutes,
+        withinGrace: openStart - threshold > 0 && openStart - threshold <= cfg.graceMinutes,
+        inProgress: true,
+      });
+      continue;
+    }
+
     const roll = rng();
 
     /* --- leave ------------------------------------------------------- */
@@ -381,8 +433,8 @@ function buildDaysFor(emp: Employee): AttendanceDay[] {
     /* --- arrival ----------------------------------------------------- */
     const arrivalRoll = rng();
     let startMin: number;
-    if (arrivalRoll < 0.16) startMin = threshold + randInt(rng, 12, 78); // properly late
-    else if (arrivalRoll < 0.26) startMin = threshold + randInt(rng, 1, 9); // inside grace
+    if (arrivalRoll < lateRate) startMin = threshold + randInt(rng, 12, 78); // properly late
+    else if (arrivalRoll < lateRate + 0.1) startMin = threshold + randInt(rng, 1, 9); // inside grace
     else startMin = threshold - 18 + randInt(rng, 0, 16); // on time
 
     const lateByMinutes = Math.max(0, startMin - threshold);

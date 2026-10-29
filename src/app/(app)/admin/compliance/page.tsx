@@ -212,6 +212,7 @@ export default function CompliancePage() {
         id: "actions",
         header: "",
         enableSorting: false,
+        enableHiding: false,
         cell: ({ row }) => (
           <span className="flex gap-1">
             <Button variant="ghost" size="sm" onClick={() => setDetail(row.original)}>
@@ -234,7 +235,7 @@ export default function CompliancePage() {
   if (loading) {
     return (
       <PageBody>
-        <PageHeader title="Compliance calendar" description="Loading filings…" />
+        <PageHeader title="Compliance Calendar" description="Loading filings…" />
         <TableSkeleton />
       </PageBody>
     );
@@ -243,7 +244,7 @@ export default function CompliancePage() {
   return (
     <PageBody>
       <PageHeader
-        title="Compliance calendar"
+        title="Compliance Calendar"
         description="Every statutory obligation across India and the United States, with its due date, owner and filing status."
         actions={
           <div className="flex items-center rounded-md border border-border p-0.5">

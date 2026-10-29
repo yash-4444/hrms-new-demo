@@ -9,7 +9,9 @@ import {
   getSortedRowModel,
   useReactTable,
   type ColumnDef,
+  type Column,
   type ColumnFiltersState,
+  type FilterFn,
   type RowSelectionState,
   type SortingState,
   type VisibilityState,
@@ -22,11 +24,14 @@ import {
   ChevronsUpDown,
   Columns3,
   Download,
+  ListFilter,
   Search,
   X,
 } from "lucide-react";
+import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { mockAction } from "@/components/app-state";
+import { menuKeyForPath } from "@/lib/nav";
+import { mockAction, useApp } from "@/components/app-state";
 import { Button } from "@/components/ui/button";
 import { Checkbox, EmptyState, Skeleton } from "@/components/ui/primitives";
 import {
@@ -68,6 +73,12 @@ export interface DataTableProps<T> {
   emptyIcon?: React.ElementType;
   emptyAction?: React.ReactNode;
   exportName?: string;
+  /** Show the Export button. Defaults to the Export (X) grant on the current
+      route's menu key; pass `can(menuKey, "X")` when the table belongs to a
+      different key than the route (e.g. an admin tab on a self-service page). */
+  canExport?: boolean;
+  /** Offer the per-column filter row (toggled from the toolbar). */
+  enableColumnFilters?: boolean;
   loading?: boolean;
   dense?: boolean;
   className?: string;
@@ -92,6 +103,8 @@ export function DataTable<T extends object>({
   emptyIcon,
   emptyAction,
   exportName = "export",
+  canExport: canExportProp,
+  enableColumnFilters = true,
   loading,
   dense,
   className,
@@ -102,6 +115,11 @@ export function DataTable<T extends object>({
   const [columnVisibility, setColumnVisibility] = React.useState<VisibilityState>({});
   const [rowSelection, setRowSelection] = React.useState<RowSelectionState>({});
   const [query, setQuery] = React.useState("");
+  const [showColumnFilters, setShowColumnFilters] = React.useState(false);
+  const pathname = usePathname();
+  const { can } = useApp();
+  const routeKey = menuKeyForPath(pathname);
+  const canExport = canExportProp ?? (routeKey ? can(routeKey, "X") : true);
 
   const filtered = React.useMemo(() => {
     if (!query.trim() || !searchKeys?.length) return data;
@@ -158,6 +176,7 @@ export function DataTable<T extends object>({
     getFilteredRowModel: getFilteredRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
     getRowId: getRowId ? (r) => getRowId(r) : undefined,
+    defaultColumn: { filterFn: containsText as FilterFn<T> },
     initialState: { pagination: { pageSize } },
     enableRowSelection: !!enableSelection,
   });
@@ -167,7 +186,7 @@ export function DataTable<T extends object>({
 
   const exportCsv = () => {
     const visible = table.getVisibleLeafColumns().filter((c) => c.id !== "__select");
-    const head = visible.map((c) => String(c.columnDef.header ?? c.id));
+    const head = visible.map(columnLabel);
     const rows = table.getFilteredRowModel().rows.map((r) =>
       visible.map((c) => {
         const v = r.getValue(c.id);
@@ -191,6 +210,30 @@ export function DataTable<T extends object>({
 
   const showToolbar = Boolean(searchKeys?.length || filters || toolbar);
   const hasRows = table.getRowModel().rows.length > 0;
+
+  /* Only plain text / number columns get a filter input — action and badge
+     columns with object values would never match a typed string. */
+  const filterable = React.useMemo(() => {
+    if (!enableColumnFilters) return new Set<string>();
+    const sample = data[0];
+    return new Set(
+      table
+        .getAllLeafColumns()
+        .filter((c) => {
+          if (c.id === "__select" || !c.getCanFilter() || !columnLabel(c)) return false;
+          if (!sample) return true;
+          const def = c.columnDef as { accessorFn?: (r: T, i: number) => unknown; accessorKey?: string };
+          const v = def.accessorFn
+            ? def.accessorFn(sample, 0)
+            : def.accessorKey
+              ? (sample as Record<string, unknown>)[def.accessorKey]
+              : undefined;
+          return typeof v === "string" || typeof v === "number";
+        })
+        .map((c) => c.id),
+    );
+  }, [enableColumnFilters, data, table]);
+  const activeColumnFilters = columnFilters.length;
 
   return (
     <div className={cn("relative flex flex-col gap-2", className)}>
@@ -232,7 +275,7 @@ export function DataTable<T extends object>({
                 <DropdownMenuSeparator />
                 {table
                   .getAllLeafColumns()
-                  .filter((c) => c.getCanHide() && c.id !== "__select")
+                  .filter((c) => c.getCanHide() && c.id !== "__select" && columnLabel(c))
                   .map((c) => (
                     <DropdownMenuCheckboxItem
                       key={c.id}
@@ -240,14 +283,27 @@ export function DataTable<T extends object>({
                       onCheckedChange={(v) => c.toggleVisibility(!!v)}
                       onSelect={(e) => e.preventDefault()}
                     >
-                      {String(c.columnDef.header ?? c.id)}
+                      {columnLabel(c)}
                     </DropdownMenuCheckboxItem>
                   ))}
               </DropdownMenuContent>
             </DropdownMenu>
-            <Button variant="outline" size="sm" onClick={exportCsv}>
-              <Download /> Export
-            </Button>
+            {filterable.size > 0 && (
+              <Button
+                variant={showColumnFilters || activeColumnFilters ? "secondary" : "outline"}
+                size="sm"
+                aria-pressed={showColumnFilters}
+                onClick={() => setShowColumnFilters((v) => !v)}
+              >
+                <ListFilter /> Filter
+                {activeColumnFilters > 0 && <span className="tnum">({activeColumnFilters})</span>}
+              </Button>
+            )}
+            {canExport && (
+              <Button variant="outline" size="sm" onClick={exportCsv}>
+                <Download /> Export
+              </Button>
+            )}
           </div>
         </div>
       )}
@@ -292,6 +348,23 @@ export function DataTable<T extends object>({
                   })}
                 </tr>
               ))}
+              {showColumnFilters && filterable.size > 0 && (
+                <tr className="border-b border-border">
+                  {table.getVisibleLeafColumns().map((c) => (
+                    <th key={c.id} scope="col" className="px-2.5 py-1 font-normal">
+                      {filterable.has(c.id) && (
+                        <input
+                          value={String(c.getFilterValue() ?? "")}
+                          onChange={(e) => c.setFilterValue(e.target.value || undefined)}
+                          placeholder="Filter…"
+                          aria-label={`Filter by ${columnLabel(c)}`}
+                          className="h-6 w-full min-w-[64px] rounded border border-input bg-card px-1.5 text-xs placeholder:text-muted-foreground focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/25"
+                        />
+                      )}
+                    </th>
+                  ))}
+                </tr>
+              )}
             </thead>
             <tbody ref={bodyRef} onKeyDown={onKeyDown}>
               {loading ? (
@@ -322,7 +395,7 @@ export function DataTable<T extends object>({
                       }
                       className={cn(
                         "border-b border-border outline-none transition-colors last:border-0",
-                        "hover:bg-muted/60 focus-visible:bg-muted data-[state=selected]:bg-primary-soft/40",
+                        "hover:bg-muted/60 focus-visible:bg-muted focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring focus-visible:outline-solid data-[state=selected]:bg-primary-soft/40",
                         onRowClick && "cursor-pointer",
                         tone === "danger" && "bg-destructive-soft/40",
                         tone === "warning" && "bg-warning-soft/40",
@@ -418,6 +491,19 @@ export function DataTable<T extends object>({
       )}
     </div>
   );
+}
+
+/** Header text for menus, CSV and aria labels; "" for unlabeled action columns. */
+function columnLabel<T>(c: Column<T, unknown>) {
+  const h = c.columnDef.header;
+  return typeof h === "string" ? h : c.id.startsWith("__") ? "" : c.id;
+}
+
+/** Case-insensitive "contains" — the filter-row default for every column. */
+function containsText(row: { getValue: (id: string) => unknown }, id: string, value: unknown) {
+  const needle = String(value ?? "").trim().toLowerCase();
+  if (!needle) return true;
+  return String(row.getValue(id) ?? "").toLowerCase().includes(needle);
 }
 
 /* ------------------------------------------------------------- cell bits */

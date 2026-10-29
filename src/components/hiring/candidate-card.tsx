@@ -21,6 +21,7 @@ import {
   type Candidate,
   type PipelineStage,
 } from "@/mock/hiring";
+import { AiMatchChip } from "@/components/ai/embed/hiring-ai-ui";
 
 /* ============================================================================
    One draggable candidate card.
@@ -123,9 +124,10 @@ export function CandidateCard({
 
       <div className="mt-2 flex flex-wrap items-center gap-1">
         <Badge variant="muted">{c.source}</Badge>
-        <span className="truncate text-[11px] text-muted-foreground" title={c.currentCompany}>
+        <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground" title={c.currentCompany}>
           {c.currentCompany}
         </span>
+        {c.stage !== "rejected" && c.stage !== "hired" && <AiMatchChip candidate={c} />}
       </div>
 
       <div className="mt-2 flex items-center justify-between gap-2 border-t border-border pt-1.5">

@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import type { ColumnDef } from "@tanstack/react-table";
 import {
   Check,
   CheckCheck,
@@ -9,6 +10,7 @@ import {
   Pin,
   PinOff,
   Plus,
+  Rows3,
   Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -20,34 +22,12 @@ import {
   type AnnouncementCategory,
 } from "@/mock/workplace";
 import { mockAction, useApp } from "@/components/app-state";
+import { DataTable } from "@/components/data-table";
+import { ViewToggle, type ListView } from "@/components/people/view-toggle";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import {
-  Alert,
-  Avatar,
-  Badge,
-  EmptyState,
-  Field,
-  Input,
-  Progress,
-  Skeleton,
-  Switch,
-  Textarea,
-} from "@/components/ui/primitives";
-import {
-  Dialog,
-  DialogBody,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  FilterSelect,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-} from "@/components/ui/overlays";
+import { Alert, Avatar, Badge, EmptyState, Progress, Skeleton } from "@/components/ui/primitives";
+import { FilterSelect } from "@/components/ui/overlays";
 import { StatRow, StatTile } from "@/components/charts/stat-tile";
 import {
   Gated,
@@ -55,6 +35,7 @@ import {
   PageHeader,
   useFakeLoad,
 } from "@/components/shell/page";
+import { AnnounceComposeDialog, type AnnounceValues } from "@/components/ai/embed/announce-compose-dialog";
 
 const CATEGORIES: AnnouncementCategory[] = [
   "Policy",
@@ -73,15 +54,7 @@ export default function AnnouncementsPage() {
   const [category, setCategory] = React.useState("all");
   const [onlyUnacked, setOnlyUnacked] = React.useState(false);
   const [composeOpen, setComposeOpen] = React.useState(false);
-
-  /* compose form */
-  const [title, setTitle] = React.useState("");
-  const [summary, setSummary] = React.useState("");
-  const [body, setBody] = React.useState("");
-  const [newCategory, setNewCategory] = React.useState<AnnouncementCategory>("Office");
-  const [pinned, setPinned] = React.useState(false);
-  const [requiresAck, setRequiresAck] = React.useState(true);
-  const [error, setError] = React.useState<string | null>(null);
+  const [view, setView] = React.useState<ListView>("cards");
 
   const visible = React.useMemo(
     () =>
@@ -108,45 +81,154 @@ export default function AnnouncementsPage() {
     mockAction("Acknowledged", { description: a.title });
   };
 
+  const acknowledgeMany = (rows: Announcement[]) => {
+    const ids = new Set(rows.filter((a) => a.requiresAck && !a.acknowledged).map((a) => a.id));
+    setItems((xs) =>
+      xs.map((x) =>
+        ids.has(x.id)
+          ? { ...x, acknowledged: true, acknowledgedAt: "2026-09-16T14:35:00", ackCount: x.ackCount + 1 }
+          : x,
+      ),
+    );
+    mockAction(`Acknowledged ${ids.size} announcement${ids.size === 1 ? "" : "s"}`, {
+      description: "Recorded against your employee record for the compliance pack.",
+    });
+  };
+
   const togglePin = (a: Announcement) => {
     setItems((xs) => xs.map((x) => (x.id === a.id ? { ...x, pinned: !x.pinned } : x)));
     mockAction(a.pinned ? "Unpinned" : "Pinned to the top", { description: a.title });
   };
 
-  const publish = () => {
-    if (title.trim().length < 8) {
-      setError("Give the announcement a title of at least 8 characters.");
-      return;
-    }
+  const publish = (v: AnnounceValues, audienceSize: number) => {
     const a: Announcement = {
       id: `ANN-NEW-${items.length}`,
-      title: title.trim(),
-      summary: summary.trim() || title.trim(),
-      body: body.trim() ? body.trim().split(/\n{2,}/) : [summary.trim() || title.trim()],
-      category: newCategory,
+      title: v.title.trim(),
+      summary: v.summary.trim() || v.title.trim(),
+      body: v.body.trim() ? v.body.trim().split(/\n{2,}/) : [v.summary.trim() || v.title.trim()],
+      category: v.category,
       authorCode: persona.employeeId,
       authorName: persona.name,
       authorTitle: persona.title,
       publishedAt: "2026-09-16T14:35:00",
-      pinned,
-      audience: "All employees",
-      audienceSize: 340,
-      requiresAck,
+      pinned: v.pinned,
+      audience: v.audience,
+      audienceSize,
+      requiresAck: v.requiresAck,
       acknowledged: true,
       acknowledgedAt: "2026-09-16T14:35:00",
       ackCount: 1,
       attachments: [],
     };
     setItems((xs) => [a, ...xs]);
-    setComposeOpen(false);
-    setTitle("");
-    setSummary("");
-    setBody("");
-    setError(null);
     mockAction("Announcement published", {
-      description: `${a.title} — sent to ${num(a.audienceSize)} employees${requiresAck ? ", acknowledgement requested" : ""}.`,
+      description: `${a.title} — sent to ${num(a.audienceSize)} employees${v.requiresAck ? ", acknowledgement requested" : ""}.`,
     });
   };
+
+  /* Table view — the same feed, sortable, with selection and Export. */
+  const columns: ColumnDef<Announcement, unknown>[] = [
+    {
+      id: "title",
+      header: "Announcement",
+      accessorKey: "title",
+      enableHiding: false,
+      cell: ({ row }) => (
+        <div className="min-w-[260px] max-w-[420px]">
+          <p className="flex items-center gap-1.5 font-medium text-foreground">
+            {row.original.pinned && <Pin className="size-3 shrink-0 text-primary" aria-label="Pinned" />}
+            <span className="truncate">{row.original.title}</span>
+          </p>
+          <p className="truncate text-[11px] text-muted-foreground">{row.original.summary}</p>
+        </div>
+      ),
+    },
+    {
+      id: "category",
+      header: "Category",
+      accessorKey: "category",
+      cell: ({ row }) => <Badge variant="muted">{row.original.category}</Badge>,
+    },
+    { id: "author", header: "Author", accessorKey: "authorName" },
+    {
+      id: "published",
+      header: "Published",
+      accessorKey: "publishedAt",
+      cell: ({ row }) => <span className="tnum whitespace-nowrap">{fmtDate(row.original.publishedAt)}</span>,
+    },
+    { id: "audience", header: "Audience", accessorKey: "audience" },
+    {
+      id: "readRate",
+      header: "Acknowledged",
+      accessorFn: (a) => (a.requiresAck ? a.ackCount / Math.max(1, a.audienceSize) : -1),
+      cell: ({ row }) => {
+        const a = row.original;
+        if (!a.requiresAck) return <span className="text-muted-foreground">Not requested</span>;
+        const ackPct = (a.ackCount / Math.max(1, a.audienceSize)) * 100;
+        return (
+          <div className="flex min-w-[140px] items-center gap-2">
+            <Progress
+              value={ackPct}
+              className="flex-1"
+              tone={ackPct >= 80 ? "success" : ackPct >= 50 ? "warning" : "danger"}
+              aria-label={`${a.title} acknowledgement progress`}
+            />
+            <span className="tnum w-9 text-right">{pct(ackPct, 0)}</span>
+          </div>
+        );
+      },
+    },
+    {
+      id: "mine",
+      header: "You",
+      accessorFn: (a) => (!a.requiresAck ? "—" : a.acknowledged ? "Acknowledged" : "Pending"),
+      cell: ({ row }) => {
+        const a = row.original;
+        if (!a.requiresAck) return <span className="text-muted-foreground">—</span>;
+        return a.acknowledged ? (
+          <span className="flex items-center gap-1 whitespace-nowrap text-success-fg">
+            <Check className="size-3" aria-hidden /> Acknowledged
+          </span>
+        ) : (
+          <Button size="sm" onClick={() => acknowledge(a)}>
+            Acknowledge
+          </Button>
+        );
+      },
+    },
+    {
+      id: "actions",
+      header: "",
+      enableSorting: false,
+      enableHiding: false,
+      cell: ({ row }) => (
+        <Gated menuKey="workplace.announcements" action="E" hide>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={row.original.pinned ? `Unpin ${row.original.title}` : `Pin ${row.original.title}`}
+            onClick={() => togglePin(row.original)}
+          >
+            {row.original.pinned ? <PinOff /> : <Pin />}
+          </Button>
+        </Gated>
+      ),
+    },
+  ];
+
+  const viewToggle = <ViewToggle view={view} onChange={setView} cardsLabel="Feed view" cardsIcon={Rows3} />;
+  const clearFiltersButton = (
+    <Button
+      variant="outline"
+      size="sm"
+      onClick={() => {
+        setCategory("all");
+        setOnlyUnacked(false);
+      }}
+    >
+      Clear filters
+    </Button>
+  );
 
   if (loading) {
     return (
@@ -219,25 +301,42 @@ export default function AnnouncementsPage() {
         <span className="tnum ml-auto text-xs text-muted-foreground">
           {visible.length} of {items.length} announcements
         </span>
+        {viewToggle}
       </div>
 
-      {visible.length === 0 ? (
+      {view === "table" ? (
+        <DataTable<Announcement>
+          columns={columns}
+          data={visible}
+          getRowId={(a) => a.id}
+          searchKeys={["title", "summary", "authorName"]}
+          searchPlaceholder="Search announcements…"
+          enableSelection
+          exportName="announcements"
+          emptyIcon={Megaphone}
+          emptyTitle="Nothing to show"
+          emptyDescription="Clear the filters, or you are fully caught up."
+          emptyAction={clearFiltersButton}
+          bulkActions={(rows, clear) => (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!rows.some((a) => a.requiresAck && !a.acknowledged)}
+              onClick={() => {
+                acknowledgeMany(rows);
+                clear();
+              }}
+            >
+              <CheckCheck /> Acknowledge
+            </Button>
+          )}
+        />
+      ) : visible.length === 0 ? (
         <EmptyState
           icon={Megaphone}
           title="Nothing to show"
           description="Clear the filters, or you are fully caught up."
-          action={
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setCategory("all");
-                setOnlyUnacked(false);
-              }}
-            >
-              Clear filters
-            </Button>
-          }
+          action={clearFiltersButton}
         />
       ) : (
         <ul className="flex flex-col gap-3">
@@ -363,88 +462,12 @@ export default function AnnouncementsPage() {
       )}
 
       {/* ------------------------------------------------------- compose */}
-      <Dialog open={composeOpen} onOpenChange={setComposeOpen}>
-        <DialogContent size="lg">
-          <DialogHeader>
-            <DialogTitle>New announcement</DialogTitle>
-            <DialogDescription>
-              Published immediately to the selected audience. Separate paragraphs with a blank line.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogBody className="flex flex-col gap-3">
-            <Field label="Title" htmlFor="ann-title" required error={error ?? undefined}>
-              <Input
-                id="ann-title"
-                value={title}
-                onChange={(e) => {
-                  setTitle(e.target.value);
-                  if (error) setError(null);
-                }}
-                aria-invalid={!!error}
-                placeholder="Deepavali holiday calendar published"
-              />
-            </Field>
-
-            <Field label="Summary" htmlFor="ann-summary" hint="One line shown in the feed and in the notification.">
-              <Input
-                id="ann-summary"
-                value={summary}
-                onChange={(e) => setSummary(e.target.value)}
-                placeholder="08 and 09 November are company holidays across both Indian branches."
-              />
-            </Field>
-
-            <Field label="Body" htmlFor="ann-body">
-              <Textarea
-                id="ann-body"
-                value={body}
-                onChange={(e) => setBody(e.target.value)}
-                className="min-h-[140px]"
-                placeholder={"First paragraph.\n\nSecond paragraph."}
-              />
-            </Field>
-
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Category" htmlFor="ann-cat" required>
-                <Select value={newCategory} onValueChange={(v) => setNewCategory(v as AnnouncementCategory)}>
-                  <SelectTrigger id="ann-cat">
-                    <span className="text-xs">{newCategory}</span>
-                  </SelectTrigger>
-                  <SelectContent>
-                    {CATEGORIES.map((c) => (
-                      <SelectItem key={c} value={c}>
-                        {c}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
-              <div className="flex flex-col justify-end gap-2">
-                <label className="flex cursor-pointer items-center justify-between gap-2 rounded-md border border-border px-2.5 py-1.5">
-                  <span className="text-xs">Pin to the top</span>
-                  <Switch checked={pinned} onCheckedChange={setPinned} aria-label="Pin to the top" />
-                </label>
-                <label className="flex cursor-pointer items-center justify-between gap-2 rounded-md border border-border px-2.5 py-1.5">
-                  <span className="text-xs">Require acknowledgement</span>
-                  <Switch
-                    checked={requiresAck}
-                    onCheckedChange={setRequiresAck}
-                    aria-label="Require acknowledgement"
-                  />
-                </label>
-              </div>
-            </div>
-          </DialogBody>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setComposeOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={publish}>
-              <Megaphone /> Publish to 340 employees
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <AnnounceComposeDialog
+        open={composeOpen}
+        onOpenChange={setComposeOpen}
+        onPublish={publish}
+        authorName={persona.name}
+      />
     </PageBody>
   );
 }

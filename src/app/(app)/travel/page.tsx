@@ -2,642 +2,627 @@
 
 import * as React from "react";
 import Link from "next/link";
-import {
-  ArrowDown,
-  Bus,
-  Car,
-  Check,
-  Plane,
-  Plus,
-  Train,
-  Wallet,
-  X,
-} from "lucide-react";
-import { cn } from "@/lib/utils";
+import type { ColumnDef } from "@tanstack/react-table";
+import { ArrowRight, Bus, Car, Check, CheckCheck, Eye, Plane, Plus, Train, Wallet, X } from "lucide-react";
+import { sum } from "@/lib/utils";
 import { fmtDate, fmtDateShort, inr, inrCompact, num } from "@/lib/format";
-import {
-  TRAVEL_ADVANCE_SUMMARY,
-  TRAVEL_REQUESTS,
-  TRAVEL_STATS,
-  type TravelLeg,
-  type TravelMode,
-  type TravelRequest,
-} from "@/mock/workplace";
+import { DEMO_TODAY } from "@/mock/org";
+import { TRAVEL_REQUESTS, type TravelMode, type TravelRequest } from "@/mock/workplace";
 import { mockAction, useApp } from "@/components/app-state";
+import { DataTable, MutedCell, NumCell } from "@/components/data-table";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import {
-  Alert,
-  Avatar,
-  Badge,
-  EmptyState,
-  Field,
-  Input,
-  Progress,
-  Skeleton,
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-  Textarea,
-} from "@/components/ui/primitives";
-import {
-  Dialog,
-  DialogBody,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  FilterSelect,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-} from "@/components/ui/overlays";
+import { Hint, Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/primitives";
+import { ConfirmDialog, FilterSelect, Sheet, SheetBody, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/overlays";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { ShareBar } from "@/components/charts";
 import { StatRow, StatTile } from "@/components/charts/stat-tile";
-import {
-  Gated,
-  PageBody,
-  PageHeader,
-  Section,
-  useFakeLoad,
-} from "@/components/shell/page";
+import { PersonCell } from "@/components/people/person-cell";
+import { CardsSkeleton, Gated, PageBody, PageHeader, Section, TableSkeleton, useFakeLoad } from "@/components/shell/page";
+import { TravelItineraryCard } from "@/components/workplace/travel-itinerary-card";
+import { TravelRequestDialog } from "@/components/workplace/travel-request-dialog";
 
-const MODE_ICON: Record<TravelMode, React.ElementType> = {
-  Flight: Plane,
-  Train: Train,
-  Cab: Car,
-  Bus: Bus,
-};
+/* ============================================================================
+   /travel — persona-aware. Everyone lands on their own trips (my.travel); a
+   persona holding workplace.travel also gets the approval queue and the
+   tenant-wide register with the advance balance, admin controls gated on it.
+   ========================================================================== */
+
+const MODE_ICON: Record<TravelMode, React.ElementType> = { Flight: Plane, Train: Train, Cab: Car, Bus: Bus };
+const NOW_STAMP = `${DEMO_TODAY}T14:35:00`;
+
+type Batch = { rows: TravelRequest[]; clear?: () => void };
+
+function travelColumns(showEmployee: boolean, actions: (r: TravelRequest) => React.ReactNode) {
+  const cols: ColumnDef<TravelRequest, unknown>[] = [
+    {
+      accessorKey: "requestNo",
+      header: "Request",
+      cell: ({ row }) => (
+        <div className="min-w-0">
+          <p className="tnum font-medium">{row.original.requestNo}</p>
+          <p className="max-w-[260px] truncate text-[11px] text-muted-foreground">{row.original.purpose}</p>
+        </div>
+      ),
+    },
+  ];
+  if (showEmployee) {
+    cols.push({
+      accessorKey: "employeeName",
+      header: "Traveller",
+      cell: ({ row }) => (
+        <PersonCell name={row.original.employeeName} subtitle={`${row.original.employeeCode} · ${row.original.department}`} />
+      ),
+    });
+  }
+  cols.push(
+    {
+      id: "route",
+      accessorFn: (r) => `${r.legs[0]?.from ?? ""} → ${r.legs[0]?.to ?? ""}`,
+      header: "Route",
+      cell: ({ row }) => {
+        const leg = row.original.legs[0];
+        const Icon = leg ? MODE_ICON[leg.mode] : Plane;
+        return (
+          <span className="flex items-center gap-1.5 whitespace-nowrap text-xs">
+            <Icon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+            {leg?.from}
+            <ArrowRight className="size-3 text-muted-foreground" aria-hidden />
+            {leg?.to}
+            {row.original.legs.length > 1 && (
+              <span className="text-muted-foreground">+{row.original.legs.length - 1}</span>
+            )}
+          </span>
+        );
+      },
+    },
+    { accessorKey: "tripType", header: "Trip", cell: ({ row }) => <MutedCell>{row.original.tripType}</MutedCell> },
+    {
+      accessorKey: "startDate",
+      header: "Dates",
+      cell: ({ row }) => (
+        <span className="tnum whitespace-nowrap text-xs">
+          {fmtDateShort(row.original.startDate)} – {fmtDate(row.original.endDate)}
+          <span className="block text-[11px] text-muted-foreground">
+            {row.original.nights} night{row.original.nights === 1 ? "" : "s"}
+          </span>
+        </span>
+      ),
+    },
+    {
+      accessorKey: "estimatedCost",
+      header: "Estimate",
+      cell: ({ row }) => <NumCell>{inr(row.original.estimatedCost, { decimals: false })}</NumCell>,
+    },
+    {
+      accessorKey: "advanceOutstanding",
+      header: "Advance out",
+      cell: ({ row }) =>
+        row.original.advanceOutstanding > 0 ? (
+          <NumCell className="text-warning-fg">{inr(row.original.advanceOutstanding, { decimals: false })}</NumCell>
+        ) : (
+          <NumCell className="text-muted-foreground">—</NumCell>
+        ),
+    },
+    { accessorKey: "status", header: "Status", cell: ({ row }) => <StatusBadge status={row.original.status} /> },
+    {
+      id: "actions",
+      header: "",
+      enableSorting: false,
+      enableHiding: false,
+      cell: ({ row }) => (
+        <div className="flex justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+          {actions(row.original)}
+        </div>
+      ),
+    },
+  );
+  return cols;
+}
 
 export default function TravelPage() {
   const loading = useFakeLoad();
-  const { persona } = useApp();
+  const { persona, can, markDecided } = useApp();
+  const isAdmin = can("workplace.travel", "V");
 
   const [requests, setRequests] = React.useState<TravelRequest[]>(TRAVEL_REQUESTS);
+  const [tab, setTab] = React.useState(isAdmin ? "queue" : "mine");
   const [status, setStatus] = React.useState("all");
   const [tripType, setTripType] = React.useState("all");
-  const [selectedId, setSelectedId] = React.useState<string | null>(TRAVEL_REQUESTS[0]?.id ?? null);
+  const [openId, setOpenId] = React.useState<string | null>(null);
   const [composeOpen, setComposeOpen] = React.useState(false);
+  const [approving, setApproving] = React.useState<Batch | null>(null);
+  const [rejecting, setRejecting] = React.useState<Batch | null>(null);
+  const [cancelling, setCancelling] = React.useState<TravelRequest | null>(null);
 
-  /* new-request form */
-  const [purpose, setPurpose] = React.useState("");
-  const [from, setFrom] = React.useState("Bengaluru");
-  const [to, setTo] = React.useState("Mumbai");
-  const [mode, setMode] = React.useState<TravelMode>("Flight");
-  const [depart, setDepart] = React.useState("2026-10-06");
-  const [back, setBack] = React.useState("2026-10-09");
-  const [advance, setAdvance] = React.useState(25000);
-  const [error, setError] = React.useState<string | null>(null);
+  const activeTab = isAdmin || tab === "mine" ? tab : "mine";
+  const me = persona.employeeId;
+  const open = requests.find((r) => r.id === openId) ?? null;
 
-  const filtered = React.useMemo(
-    () =>
-      requests.filter(
-        (r) =>
-          (status === "all" || r.status === status) && (tripType === "all" || r.tripType === tripType),
-      ),
-    [requests, status, tripType],
+  const mine = React.useMemo(() => requests.filter((r) => r.employeeCode === me), [requests, me]);
+  const queue = React.useMemo(
+    () => requests.filter((r) => r.status === "submitted" && r.employeeCode !== me),
+    [requests, me],
   );
-
-  const selected = filtered.find((r) => r.id === selectedId) ?? filtered[0] ?? null;
+  const filterRows = (list: TravelRequest[]) =>
+    list.filter((r) => (status === "all" || r.status === status) && (tripType === "all" || r.tripType === tripType));
 
   /* Advance balance recomputes from the live list, not the frozen fixture. */
-  const advanceSummary = React.useMemo(
+  const advance = React.useMemo(
     () => ({
-      requested: requests.reduce((a, b) => a + b.advanceRequested, 0),
-      disbursed: requests.reduce((a, b) => a + b.advanceDisbursed, 0),
-      settled: requests.reduce((a, b) => a + b.advanceSettled, 0),
-      outstanding: requests.reduce((a, b) => a + b.advanceOutstanding, 0),
+      requested: sum(requests.map((r) => r.advanceRequested)),
+      disbursed: sum(requests.map((r) => r.advanceDisbursed)),
+      settled: sum(requests.map((r) => r.advanceSettled)),
+      outstanding: sum(requests.map((r) => r.advanceOutstanding)),
     }),
     [requests],
   );
 
-  const submit = () => {
-    if (purpose.trim().length < 6) {
-      setError("Describe the purpose in at least 6 characters — the approver decides on this line.");
-      return;
-    }
-    if (back < depart) {
-      setError("The return date cannot be before the departure date.");
-      return;
-    }
-    const nights = Math.max(
-      0,
-      Math.round((new Date(back).getTime() - new Date(depart).getTime()) / 86400000),
+  /* ----------------------------------------------------------- mutations */
+
+  const decide = (batch: Batch, approve: boolean, comment: string) => {
+    const ids = new Set(batch.rows.map((r) => r.id));
+    const before = requests;
+    setRequests((rs) =>
+      rs.map((r) =>
+        ids.has(r.id)
+          ? {
+              ...r,
+              status: approve ? "approved" : "rejected",
+              decidedOn: NOW_STAMP,
+              decisionNote: approve ? null : `Rejected — ${comment}`,
+              approverName: persona.name,
+              advanceDisbursed: approve ? r.advanceRequested : 0,
+              advanceOutstanding: approve ? r.advanceRequested : 0,
+              legs: approve ? r.legs : r.legs.map((l) => ({ ...l, bookingStatus: "cancelled" as const })),
+            }
+          : r,
+      ),
     );
-    const estimated = mode === "Flight" ? 14000 + nights * 6500 : 3200 + nights * 5200;
-    const leg: TravelLeg = {
-      id: `LEG-NEW-${requests.length}`,
-      from,
-      to,
-      mode,
-      departDate: depart,
-      returnDate: back,
-      bookingStatus: "pending",
-      bookingRef: null,
-      carrier: mode === "Flight" ? "IndiGo" : mode === "Train" ? "Indian Railways" : "Ola Corporate",
-      estimatedCost: estimated,
-    };
-    const req: TravelRequest = {
-      id: `TRV-NEW-${requests.length}`,
-      requestNo: `TRV-2026-${String(400 + requests.length)}`,
-      employeeCode: persona.employeeId,
-      employeeName: persona.name,
-      department: persona.department,
-      purpose: purpose.trim(),
-      tripType: "Domestic",
-      startDate: depart,
-      endDate: back,
-      nights,
-      legs: [leg],
-      perDiem: 1800,
-      estimatedCost: estimated + nights * 1800,
-      advanceRequested: advance,
-      advanceDisbursed: 0,
-      advanceSettled: 0,
-      advanceOutstanding: advance,
-      status: "submitted",
-      approverCode: "STL-0031",
-      approverName: "Vikram Shah",
-      submittedOn: "2026-09-16",
-      decidedOn: null,
-      decisionNote: null,
-      search: [`TRV-2026-${String(400 + requests.length)}`, persona.name, purpose.trim(), from, to]
-        .join(" ")
-        .toLowerCase(),
-    };
-    setRequests((rs) => [req, ...rs]);
-    setSelectedId(req.id);
-    setComposeOpen(false);
-    setPurpose("");
-    setError(null);
-    mockAction(`${req.requestNo} submitted`, {
-      description: `${from} → ${to} · ${nights} night${nights === 1 ? "" : "s"} · advance ${inr(advance, { decimals: false })} requested.`,
-    });
+    const fromInbox = batch.rows.filter((r) => r.approverCode === me).map((r) => `travel:${r.id}`);
+    markDecided(fromInbox);
+    batch.clear?.();
+    setOpenId(null);
+    const one = batch.rows.length === 1 ? batch.rows[0] : null;
+    mockAction(
+      approve
+        ? one ? `Approved ${one.requestNo}` : `Approved ${batch.rows.length} trips`
+        : one ? `Rejected ${one.requestNo}` : `Rejected ${batch.rows.length} trips`,
+      {
+        description: approve
+          ? "The travel desk starts booking; any advance is disbursed with the next payout."
+          : `Reason sent to ${one ? one.employeeName : "each traveller"}: “${comment}”`,
+        tone: approve ? "success" : "warning",
+        undo: () => {
+          setRequests(before);
+          markDecided(fromInbox, false);
+        },
+      },
+    );
   };
 
-  const decide = (r: TravelRequest, approve: boolean) => {
+  const cancel = (r: TravelRequest, reason: string) => {
+    const before = requests;
     setRequests((rs) =>
       rs.map((x) =>
         x.id === r.id
           ? {
               ...x,
-              status: approve ? "approved" : "rejected",
-              decidedOn: "2026-09-16",
-              decisionNote: approve ? "Approved within the travel policy." : "Not approved — use video conferencing.",
-              approverName: persona.name,
-              advanceDisbursed: approve ? x.advanceRequested : 0,
-              advanceOutstanding: approve ? x.advanceRequested - x.advanceSettled : 0,
+              status: "cancelled",
+              decisionNote: reason ? `Cancelled by the traveller — ${reason}` : "Cancelled by the traveller.",
+              legs: x.legs.map((l) => ({ ...l, bookingStatus: "cancelled" as const })),
             }
           : x,
       ),
     );
-    mockAction(approve ? `Approved ${r.requestNo}` : `Rejected ${r.requestNo}`, {
-      description: `${r.employeeName} · ${r.legs[0]?.from} → ${r.legs[0]?.to}`,
-      tone: approve ? "success" : "warning",
+    setOpenId(null);
+    mockAction(`${r.requestNo} cancelled`, {
+      description:
+        r.advanceDisbursed > 0
+          ? `${inr(r.advanceDisbursed, { decimals: false })} advance is due back to finance.`
+          : "The travel desk has been told to release any holds.",
+      undo: () => setRequests(before),
     });
   };
+
+  const settle = (r: TravelRequest) => {
+    const before = requests;
+    setRequests((rs) =>
+      rs.map((x) => (x.id === r.id ? { ...x, advanceSettled: x.advanceDisbursed, advanceOutstanding: 0 } : x)),
+    );
+    mockAction(`Advance settled — ${r.requestNo}`, {
+      description: `${inr(r.advanceOutstanding, { decimals: false })} reconciled against submitted bills.`,
+      undo: () => setRequests(before),
+    });
+  };
+
+  /* -------------------------------------------------------------- columns */
+
+  const myColumns = React.useMemo(
+    () => travelColumns(false, (r) => <ViewButton request={r} onView={() => setOpenId(r.id)} />),
+    [],
+  );
+  const registerColumns = React.useMemo(
+    () => travelColumns(true, (r) => <ViewButton request={r} onView={() => setOpenId(r.id)} />),
+    [],
+  );
+  const queueColumns = React.useMemo(
+    () =>
+      travelColumns(true, (r) => (
+        <>
+          <ViewButton request={r} onView={() => setOpenId(r.id)} />
+          <Gated menuKey="workplace.travel" action="A">
+            <Button size="icon-sm" variant="ghost" aria-label={`Reject ${r.requestNo}`} onClick={() => setRejecting({ rows: [r] })}>
+              <X />
+            </Button>
+          </Gated>
+          <Gated menuKey="workplace.travel" action="A">
+            <Button size="icon-sm" variant="soft" aria-label={`Approve ${r.requestNo}`} onClick={() => setApproving({ rows: [r] })}>
+              <Check />
+            </Button>
+          </Gated>
+        </>
+      )),
+    [],
+  );
+
+  const stats = React.useMemo(() => {
+    const upcoming = mine.filter((r) => r.status === "approved" && r.startDate >= DEMO_TODAY);
+    return {
+      upcoming,
+      myPending: mine.filter((r) => r.status === "submitted").length,
+      myAdvance: sum(mine.map((r) => r.advanceOutstanding)),
+      myTrips: mine.filter((r) => r.status === "completed").length,
+      tenantUpcoming: requests.filter((r) => r.status === "approved" && r.startDate >= DEMO_TODAY).length,
+      spend: sum(requests.filter((r) => r.status !== "rejected" && r.status !== "cancelled").map((r) => r.estimatedCost)),
+    };
+  }, [mine, requests]);
+
+  /* ---------------------------------------------------------------- render */
+
+  const header = (
+    <PageHeader
+      title={isAdmin ? "Travel" : "My travel"}
+      description={
+        isAdmin
+          ? "Approve trip requests, see every itinerary in flight, and track the advance money tied up against them."
+          : "Raise a trip, follow its approval and bookings leg by leg, and see the advance you still need to settle."
+      }
+      actions={
+        <Gated menuKey="my.travel" action="C">
+          <Button size="sm" onClick={() => setComposeOpen(true)}>
+            <Plus /> New travel request
+          </Button>
+        </Gated>
+      }
+    />
+  );
 
   if (loading) {
     return (
       <PageBody>
-        <PageHeader title="Travel" description="Loading requests…" />
-        <Skeleton className="h-[440px]" />
+        {header}
+        <CardsSkeleton count={4} />
+        <TableSkeleton />
       </PageBody>
     );
   }
 
+  const filters = (
+    <>
+      <FilterSelect
+        label="Status"
+        value={status}
+        onValueChange={setStatus}
+        allLabel="All statuses"
+        width="w-[170px]"
+        options={[
+          { value: "draft", label: "Draft" },
+          { value: "submitted", label: "Submitted" },
+          { value: "approved", label: "Approved" },
+          { value: "rejected", label: "Rejected" },
+          { value: "completed", label: "Completed" },
+          { value: "cancelled", label: "Cancelled" },
+        ]}
+      />
+      <FilterSelect
+        label="Trip"
+        value={tripType}
+        onValueChange={setTripType}
+        allLabel="All trips"
+        width="w-[160px]"
+        options={[
+          { value: "Domestic", label: "Domestic" },
+          { value: "International", label: "International" },
+        ]}
+      />
+    </>
+  );
+
+  const canSettle = (r: TravelRequest) =>
+    can("workplace.travel_advances", "E") && r.advanceOutstanding > 0 && r.endDate <= DEMO_TODAY;
+  const canCancel = (r: TravelRequest) =>
+    r.employeeCode === me && can("my.travel", "E") && ["draft", "submitted", "approved"].includes(r.status) && r.startDate > DEMO_TODAY;
+
+  const myTable = (
+    <DataTable<TravelRequest>
+      columns={myColumns}
+      data={filterRows(mine)}
+      getRowId={(r) => r.id}
+      searchKeys={["requestNo", "purpose", "search"]}
+      searchPlaceholder="Search request, purpose or city…"
+      exportName="my-travel-requests"
+      onRowClick={(r) => setOpenId(r.id)}
+      filters={filters}
+      emptyIcon={Plane}
+      emptyTitle={mine.length ? "No trip matches these filters" : "You have no travel requests yet"}
+      emptyDescription={
+        mine.length
+          ? "Clear the status or trip filter to see the rest."
+          : "Raise a request before you book — your manager approves it and the travel desk books every leg."
+      }
+    />
+  );
+
   return (
     <PageBody>
-      <PageHeader
-        title="Travel"
-        description="Trip requests with their full itinerary, and the advance money tied up against them."
-        actions={
-          <Gated menuKey="my.travel" action="C">
-            <Button size="sm" onClick={() => setComposeOpen(true)}>
-              <Plus /> New travel request
-            </Button>
-          </Gated>
-        }
+      {header}
+
+      {isAdmin ? (
+        <StatRow cols={4}>
+          <StatTile
+            label="Awaiting approval"
+            value={num(queue.length)}
+            icon={CheckCheck}
+            tone={queue.length ? "warning" : "good"}
+            onClick={() => setTab("queue")}
+          />
+          <StatTile label="Upcoming trips" value={num(stats.tenantUpcoming)} icon={Plane} hint="Approved, not yet started" />
+          <StatTile label="Estimated spend" value={inrCompact(stats.spend)} icon={Wallet} hint="Approved and pending trips" />
+          <StatTile
+            label="Advance outstanding"
+            value={inrCompact(advance.outstanding)}
+            icon={Wallet}
+            tone={advance.outstanding > 0 ? "warning" : "good"}
+            hint="Disbursed, not yet settled"
+            onClick={() => setTab("all")}
+          />
+        </StatRow>
+      ) : (
+        <StatRow cols={4}>
+          <StatTile
+            label="Upcoming trips"
+            value={num(stats.upcoming.length)}
+            icon={Plane}
+            hint={stats.upcoming[0] ? `Next: ${stats.upcoming[0].legs[0]?.to} on ${fmtDate(stats.upcoming[0].startDate)}` : "Nothing booked"}
+            onClick={() => setStatus("approved")}
+          />
+          <StatTile
+            label="Awaiting approval"
+            value={num(stats.myPending)}
+            icon={CheckCheck}
+            tone={stats.myPending ? "warning" : "neutral"}
+            onClick={() => setStatus("submitted")}
+          />
+          <StatTile
+            label="Advance in hand"
+            value={inr(stats.myAdvance, { decimals: false })}
+            icon={Wallet}
+            tone={stats.myAdvance > 0 ? "warning" : "good"}
+            hint="Settle against bills within 10 days of returning"
+          />
+          <StatTile label="Trips completed" value={num(stats.myTrips)} icon={Check} onClick={() => setStatus("completed")} />
+        </StatRow>
+      )}
+
+      {isAdmin ? (
+        <Tabs value={activeTab} onValueChange={setTab}>
+          <TabsList>
+            <TabsTrigger value="queue">
+              <CheckCheck /> Approval queue ({queue.length})
+            </TabsTrigger>
+            <TabsTrigger value="all">
+              <Plane /> All requests ({requests.length})
+            </TabsTrigger>
+            <TabsTrigger value="mine">
+              <Wallet /> My trips ({mine.length})
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="queue" className="flex flex-col gap-3">
+            <DataTable<TravelRequest>
+              columns={queueColumns}
+              data={filterRows(queue)}
+              getRowId={(r) => r.id}
+              searchKeys={["requestNo", "employeeName", "purpose", "search"]}
+              searchPlaceholder="Search request, traveller or city…"
+              exportName="travel-approval-queue"
+              canExport={can("workplace.travel", "X")}
+              enableSelection={can("workplace.travel", "A")}
+              onRowClick={(r) => setOpenId(r.id)}
+              filters={filters}
+              emptyIcon={CheckCheck}
+              emptyTitle={queue.length ? "No request matches these filters" : "Nothing to approve"}
+              emptyDescription={queue.length ? "Clear a filter to see the rest of the queue." : "Every trip request has been decided."}
+              bulkActions={(rows, clear) => (
+                <>
+                  <Gated menuKey="workplace.travel" action="A">
+                    <Button size="sm" variant="outline" onClick={() => setRejecting({ rows, clear })}>
+                      <X /> Reject {rows.length}
+                    </Button>
+                  </Gated>
+                  <Gated menuKey="workplace.travel" action="A">
+                    <Button size="sm" onClick={() => setApproving({ rows, clear })}>
+                      <Check /> Approve {rows.length}
+                    </Button>
+                  </Gated>
+                </>
+              )}
+            />
+          </TabsContent>
+
+          <TabsContent value="all" className="flex flex-col gap-3">
+            <Section
+              title="Advance balance"
+              description="Company money currently in employees' hands. Settlement closes the loop after each trip."
+              actions={
+                can("workplace.travel_advances", "V") ? (
+                  <Button variant="outline" size="sm" asChild>
+                    <Link href="/travel/advances">Open travel advances</Link>
+                  </Button>
+                ) : undefined
+              }
+            >
+              <ShareBar
+                segments={[
+                  { key: "settled", label: "Settled", value: advance.settled, status: "good" },
+                  { key: "outstanding", label: "Outstanding", value: advance.outstanding, status: "warning" },
+                  {
+                    key: "undisbursed",
+                    label: "Requested, not disbursed",
+                    value: Math.max(0, advance.requested - advance.disbursed),
+                    status: "serious",
+                  },
+                ]}
+                total={Math.max(advance.requested, 1)}
+                valueFormat={(v) => inr(v, { decimals: false })}
+                height={10}
+              />
+            </Section>
+            <DataTable<TravelRequest>
+              columns={registerColumns}
+              data={filterRows(requests)}
+              getRowId={(r) => r.id}
+              searchKeys={["requestNo", "employeeName", "purpose", "search"]}
+              searchPlaceholder="Search request, traveller or city…"
+              exportName="travel-requests"
+              canExport={can("workplace.travel", "X")}
+              onRowClick={(r) => setOpenId(r.id)}
+              rowTone={(r) => (r.advanceOutstanding > 0 && r.endDate < DEMO_TODAY ? "warning" : undefined)}
+              filters={filters}
+              emptyIcon={Plane}
+              emptyTitle="No request matches these filters"
+              emptyDescription="Clear the status or trip filter to widen the register."
+            />
+          </TabsContent>
+
+          <TabsContent value="mine" className="flex flex-col gap-3">
+            {myTable}
+          </TabsContent>
+        </Tabs>
+      ) : (
+        myTable
+      )}
+
+      {/* -------------------------------------------------- itinerary sheet */}
+      <Sheet open={!!open} onOpenChange={(v) => !v && setOpenId(null)}>
+        <SheetContent side="right" width="sm:max-w-2xl">
+          {open && (
+            <>
+              <SheetHeader>
+                <SheetTitle className="tnum">{open.requestNo}</SheetTitle>
+                <SheetDescription>
+                  {open.employeeName} · {open.purpose}
+                </SheetDescription>
+              </SheetHeader>
+              <SheetBody>
+                <TravelItineraryCard
+                  request={open}
+                  onSettle={canSettle(open) ? settle : undefined}
+                  onCancel={canCancel(open) ? setCancelling : undefined}
+                  footer={
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {isAdmin && open.status === "submitted" && open.employeeCode !== me && (
+                        <>
+                          <Gated menuKey="workplace.travel" action="A">
+                            <Button size="sm" onClick={() => setApproving({ rows: [open] })}>
+                              <Check /> Approve
+                            </Button>
+                          </Gated>
+                          <Gated menuKey="workplace.travel" action="A">
+                            <Button size="sm" variant="outline" onClick={() => setRejecting({ rows: [open] })}>
+                              <X /> Reject
+                            </Button>
+                          </Gated>
+                        </>
+                      )}
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="ml-auto"
+                        onClick={() =>
+                          mockAction("Itinerary emailed", { description: `${open.requestNo} sent to ${open.employeeName}.` })
+                        }
+                      >
+                        Email itinerary
+                      </Button>
+                    </div>
+                  }
+                />
+              </SheetBody>
+            </>
+          )}
+        </SheetContent>
+      </Sheet>
+
+      <TravelRequestDialog
+        open={composeOpen}
+        onOpenChange={setComposeOpen}
+        employeeCode={me}
+        onSubmitted={(r) => {
+          setRequests((rs) => [r, ...rs]);
+          mockAction(`${r.requestNo} submitted`, {
+            description: `${r.legs[0].from} → ${r.legs[0].to} · ${r.nights} night${r.nights === 1 ? "" : "s"} · routed to ${r.approverName}.`,
+          });
+        }}
       />
 
-      <StatRow cols={4}>
-        <StatTile label="Requests" value={num(requests.length)} icon={Plane} hint={`${TRAVEL_STATS.upcoming} upcoming trips`} />
-        <StatTile
-          label="Awaiting approval"
-          value={num(requests.filter((r) => r.status === "submitted").length)}
-          icon={Check}
-          tone={requests.some((r) => r.status === "submitted") ? "warning" : "good"}
-          onClick={() => setStatus("submitted")}
-        />
-        <StatTile label="Estimated spend" value={inrCompact(TRAVEL_STATS.estimatedSpend)} icon={Wallet} hint="Approved and pending trips" />
-        <StatTile
-          label="Advance outstanding"
-          value={inrCompact(advanceSummary.outstanding)}
-          icon={Wallet}
-          tone={advanceSummary.outstanding > 0 ? "warning" : "good"}
-          hint="Disbursed but not yet settled"
-        />
-      </StatRow>
+      <ConfirmDialog
+        open={!!approving}
+        onOpenChange={(v) => !v && setApproving(null)}
+        title={approving?.rows.length === 1 ? `Approve ${approving.rows[0].requestNo}?` : `Approve ${approving?.rows.length ?? 0} trips?`}
+        description={
+          approving &&
+          `Estimated ${inr(sum(approving.rows.map((r) => r.estimatedCost)), { decimals: false })}, with ${inr(
+            sum(approving.rows.map((r) => r.advanceRequested)),
+            { decimals: false },
+          )} of advance to disburse. The travel desk starts booking straight away.`
+        }
+        confirmLabel="Approve"
+        onConfirm={() => approving && decide(approving, true, "")}
+      />
 
-      {/* -------------------------------------------- advance balance panel */}
-      <Section
-        title="Advance balance"
-        description="Company money currently in employees' hands. Settlement closes the loop after each trip."
-      >
-        <ShareBar
-          segments={[
-            { key: "settled", label: "Settled", value: advanceSummary.settled, status: "good" },
-            { key: "outstanding", label: "Outstanding", value: advanceSummary.outstanding, status: "warning" },
-            {
-              key: "undisbursed",
-              label: "Requested, not disbursed",
-              value: Math.max(0, advanceSummary.requested - advanceSummary.disbursed),
-              status: "serious",
-            },
-          ]}
-          total={Math.max(advanceSummary.requested, 1)}
-          valueFormat={(v) => inr(v, { decimals: false })}
-          height={10}
-        />
-        <dl className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-          {[
-            ["Requested", advanceSummary.requested],
-            ["Disbursed", advanceSummary.disbursed],
-            ["Settled", advanceSummary.settled],
-            ["Outstanding", advanceSummary.outstanding],
-          ].map(([k, v]) => (
-            <div key={k as string} className="rounded-md border border-border bg-subtle p-2.5">
-              <dt className="text-[10px] uppercase tracking-wide text-muted-foreground">{k as string}</dt>
-              <dd className="tnum mt-0.5 text-sm font-semibold">
-                {inr(v as number, { decimals: false })}
-              </dd>
-            </div>
-          ))}
-        </dl>
-      </Section>
+      <ConfirmDialog
+        open={!!rejecting}
+        onOpenChange={(v) => !v && setRejecting(null)}
+        title={rejecting?.rows.length === 1 ? `Reject ${rejecting.rows[0].requestNo}?` : `Reject ${rejecting?.rows.length ?? 0} trips?`}
+        description="The traveller is notified with your reason; nothing is booked and no advance is paid."
+        confirmLabel="Reject"
+        destructive
+        comment={{ label: "Reason for rejection", placeholder: "e.g. The review can run over video this quarter." }}
+        onConfirm={(comment) => rejecting && decide(rejecting, false, comment)}
+      />
 
-      <div className="flex flex-wrap items-center gap-1.5">
-        <FilterSelect
-          label="Status"
-          value={status}
-          onValueChange={setStatus}
-          allLabel="All statuses"
-          width="w-[170px]"
-          options={[
-            { value: "draft", label: "Draft" },
-            { value: "submitted", label: "Submitted" },
-            { value: "approved", label: "Approved" },
-            { value: "rejected", label: "Rejected" },
-            { value: "completed", label: "Completed" },
-            { value: "cancelled", label: "Cancelled" },
-          ]}
-        />
-        <FilterSelect
-          label="Trip"
-          value={tripType}
-          onValueChange={setTripType}
-          allLabel="All trips"
-          width="w-[160px]"
-          options={[
-            { value: "Domestic", label: "Domestic" },
-            { value: "International", label: "International" },
-          ]}
-        />
-        <span className="tnum ml-auto text-xs text-muted-foreground">
-          {filtered.length} of {requests.length} requests
-        </span>
-      </div>
-
-      <div className="grid gap-3 lg:grid-cols-[minmax(0,340px)_1fr]">
-        {/* ------------------------------------------------------- list */}
-        <Section title="Requests" bodyClassName="p-0">
-          {filtered.length === 0 ? (
-            <EmptyState
-              icon={Plane}
-              title="No requests match"
-              description="Clear a filter to see the rest."
-              className="border-0"
-            />
-          ) : (
-            <ul className="scrollbar-thin max-h-[560px] overflow-y-auto">
-              {filtered.map((r) => {
-                const active = r.id === selected?.id;
-                return (
-                  <li key={r.id} className="border-b border-border last:border-0">
-                    <button
-                      type="button"
-                      onClick={() => setSelectedId(r.id)}
-                      aria-current={active ? "true" : undefined}
-                      className={cn(
-                        "flex w-full items-start gap-2.5 px-4 py-2.5 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring",
-                        active ? "bg-primary-soft" : "hover:bg-muted/60",
-                      )}
-                    >
-                      <Avatar name={r.employeeName} size={26} />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-xs font-medium">
-                          {r.legs[0]?.from} → {r.legs[0]?.to}
-                        </span>
-                        <span className="tnum block truncate text-[11px] text-muted-foreground">
-                          {r.requestNo} · {r.employeeName} · {fmtDateShort(r.startDate)}
-                        </span>
-                      </span>
-                      <span className="shrink-0 text-right">
-                        <StatusBadge status={r.status} />
-                        <span className="tnum mt-0.5 block text-[10px] text-muted-foreground">
-                          {inrCompact(r.estimatedCost)}
-                        </span>
-                      </span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </Section>
-
-        {/* ------------------------------------------------ itinerary card */}
-        {selected ? (
-          <div className="flex flex-col gap-3">
-            <Card className="overflow-hidden">
-              <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border bg-subtle p-4">
-                <div className="flex items-start gap-3">
-                  <Avatar name={selected.employeeName} size={36} />
-                  <div>
-                    <p className="text-sm font-semibold">{selected.purpose}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {selected.requestNo} ·{" "}
-                      <Link href={`/employees/${selected.employeeCode}`} className="hover:underline">
-                        {selected.employeeName}
-                      </Link>{" "}
-                      · {selected.department}
-                    </p>
-                    <div className="mt-1.5 flex flex-wrap gap-1">
-                      <Badge variant="muted">{selected.tripType}</Badge>
-                      <Badge variant="muted">
-                        {selected.nights} night{selected.nights === 1 ? "" : "s"}
-                      </Badge>
-                      <Badge variant="muted">Per diem {inr(selected.perDiem, { decimals: false })}</Badge>
-                    </div>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <StatusBadge status={selected.status} size="md" />
-                  <p className="tnum mt-1.5 text-sm font-semibold">
-                    {inr(selected.estimatedCost, { decimals: false })}
-                  </p>
-                  <p className="text-[10px] text-muted-foreground">estimated cost</p>
-                </div>
-              </div>
-
-              {/* the journey */}
-              <div className="p-4">
-                <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  Itinerary
-                </p>
-                <ol className="mt-2.5 flex flex-col">
-                  {selected.legs.map((leg, i) => {
-                    const Icon = MODE_ICON[leg.mode];
-                    return (
-                      <li key={leg.id} className="flex gap-3">
-                        <div className="flex flex-col items-center">
-                          <span className="flex size-7 shrink-0 items-center justify-center rounded-full border border-border bg-card text-muted-foreground">
-                            <Icon className="size-3.5" aria-hidden />
-                          </span>
-                          {i < selected.legs.length - 1 && (
-                            <span className="w-px flex-1 bg-border" aria-hidden />
-                          )}
-                        </div>
-                        <div className="flex-1 pb-4">
-                          <p className="flex flex-wrap items-center gap-1.5 text-xs font-medium">
-                            {leg.from}
-                            <ArrowDown className="size-3 -rotate-90 text-muted-foreground" aria-hidden />
-                            {leg.to}
-                            <Badge variant="muted">{leg.mode}</Badge>
-                            <StatusBadge status={leg.bookingStatus} />
-                          </p>
-                          <p className="tnum mt-0.5 text-[11px] text-muted-foreground">
-                            {fmtDate(leg.departDate)}
-                            {leg.returnDate ? ` – ${fmtDate(leg.returnDate)}` : ""} · {leg.carrier}
-                            {leg.bookingRef ? ` · ref ${leg.bookingRef}` : " · not yet booked"} ·{" "}
-                            {inr(leg.estimatedCost, { decimals: false })}
-                          </p>
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ol>
-              </div>
-
-              {/* advance for this trip */}
-              <div className="border-t border-border p-4">
-                <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  Advance for this trip
-                </p>
-                <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-4">
-                  {[
-                    ["Requested", selected.advanceRequested],
-                    ["Disbursed", selected.advanceDisbursed],
-                    ["Settled", selected.advanceSettled],
-                    ["Outstanding", selected.advanceOutstanding],
-                  ].map(([k, v]) => (
-                    <div key={k as string}>
-                      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                        {k as string}
-                      </p>
-                      <p
-                        className={cn(
-                          "tnum mt-0.5 text-sm font-semibold",
-                          k === "Outstanding" && (v as number) > 0 && "text-warning-fg",
-                        )}
-                      >
-                        {inr(v as number, { decimals: false })}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-                {selected.advanceRequested > 0 && (
-                  <Progress
-                    value={(selected.advanceSettled / Math.max(1, selected.advanceRequested)) * 100}
-                    className="mt-2.5"
-                    tone={selected.advanceOutstanding > 0 ? "warning" : "success"}
-                    aria-label="Advance settlement progress"
-                  />
-                )}
-              </div>
-
-              {selected.decisionNote && (
-                <p className="border-t border-border px-4 py-2.5 text-[11px] text-muted-foreground">
-                  <span className="font-medium text-foreground">{selected.approverName}</span> on{" "}
-                  {selected.decidedOn ? fmtDate(selected.decidedOn) : "—"}: {selected.decisionNote}
-                </p>
-              )}
-
-              <div className="flex flex-wrap items-center gap-2 border-t border-border px-4 py-2.5">
-                {selected.status === "submitted" && (
-                  <>
-                    <Gated menuKey="workplace.travel" action="A">
-                      <Button size="sm" onClick={() => decide(selected, true)}>
-                        <Check /> Approve
-                      </Button>
-                    </Gated>
-                    <Gated menuKey="workplace.travel" action="A">
-                      <Button variant="outline" size="sm" onClick={() => decide(selected, false)}>
-                        <X /> Reject
-                      </Button>
-                    </Gated>
-                  </>
-                )}
-                {selected.advanceOutstanding > 0 && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      setRequests((rs) =>
-                        rs.map((x) =>
-                          x.id === selected.id
-                            ? {
-                                ...x,
-                                advanceSettled: x.advanceDisbursed,
-                                advanceOutstanding: 0,
-                                status: "completed",
-                              }
-                            : x,
-                        ),
-                      );
-                      mockAction(`Advance settled — ${selected.requestNo}`, {
-                        description: `${inr(selected.advanceOutstanding, { decimals: false })} reconciled against submitted bills.`,
-                      });
-                    }}
-                  >
-                    <Wallet /> Settle advance
-                  </Button>
-                )}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="ml-auto"
-                  onClick={() =>
-                    mockAction("Itinerary emailed", {
-                      description: `${selected.requestNo} sent to ${selected.employeeName}.`,
-                    })
-                  }
-                >
-                  Email itinerary
-                </Button>
-              </div>
-            </Card>
-          </div>
-        ) : (
-          <EmptyState icon={Plane} title="Select a request" description="Pick a trip from the list to see its itinerary." />
-        )}
-      </div>
-
-      {/* --------------------------------------------------- new request */}
-      <Dialog open={composeOpen} onOpenChange={setComposeOpen}>
-        <DialogContent size="md">
-          <DialogHeader>
-            <DialogTitle>New travel request</DialogTitle>
-            <DialogDescription>
-              One leg is enough to raise the request — travel desk adds the return and any connection.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogBody className="flex flex-col gap-3">
-            <Field
-              label="Purpose"
-              htmlFor="trv-purpose"
-              required
-              error={error && purpose.trim().length < 6 ? error : undefined}
-              hint="e.g. “Customer QBR with Tata Digital, Mumbai”"
-            >
-              <Input
-                id="trv-purpose"
-                value={purpose}
-                onChange={(e) => {
-                  setPurpose(e.target.value);
-                  setError(null);
-                }}
-                aria-invalid={!!error && purpose.trim().length < 6}
-              />
-            </Field>
-
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="From" htmlFor="trv-from" required>
-                <Input id="trv-from" value={from} onChange={(e) => setFrom(e.target.value)} />
-              </Field>
-              <Field label="To" htmlFor="trv-to" required>
-                <Input id="trv-to" value={to} onChange={(e) => setTo(e.target.value)} />
-              </Field>
-            </div>
-
-            <div className="grid grid-cols-3 gap-3">
-              <Field label="Mode" htmlFor="trv-mode" required>
-                <Select value={mode} onValueChange={(v) => setMode(v as TravelMode)}>
-                  <SelectTrigger id="trv-mode">
-                    <span className="text-xs">{mode}</span>
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(["Flight", "Train", "Cab", "Bus"] as TravelMode[]).map((m) => (
-                      <SelectItem key={m} value={m}>
-                        {m}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
-              <Field label="Departure" htmlFor="trv-depart" required>
-                <Input id="trv-depart" type="date" value={depart} onChange={(e) => setDepart(e.target.value)} />
-              </Field>
-              <Field
-                label="Return"
-                htmlFor="trv-back"
-                required
-                error={error && back < depart ? error : undefined}
-              >
-                <Input
-                  id="trv-back"
-                  type="date"
-                  value={back}
-                  onChange={(e) => {
-                    setBack(e.target.value);
-                    setError(null);
-                  }}
-                  aria-invalid={!!error && back < depart}
-                />
-              </Field>
-            </div>
-
-            <Field label="Advance requested" htmlFor="trv-advance" hint="Settled against bills within 7 days of returning.">
-              <Input
-                id="trv-advance"
-                type="number"
-                step={1000}
-                value={advance}
-                onChange={(e) => setAdvance(Number(e.target.value) || 0)}
-                className="tnum"
-              />
-            </Field>
-
-            <Alert tone="info">
-              Domestic hotel cap is {inr(6500, { decimals: false })} per night for metro cities, and
-              per diem is {inr(1800, { decimals: false })} per day. Anything above needs a written
-              exception.
-            </Alert>
-          </DialogBody>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setComposeOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={submit}>
-              <Check /> Submit request
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ConfirmDialog
+        open={!!cancelling}
+        onOpenChange={(v) => !v && setCancelling(null)}
+        title={`Cancel ${cancelling?.requestNo ?? ""}?`}
+        description="Every leg is released and the travel desk stops booking. Any advance already paid is due back to finance."
+        confirmLabel="Cancel trip"
+        cancelLabel="Keep trip"
+        destructive
+        comment={{ label: "Reason", placeholder: "Optional — e.g. the customer moved the review online.", required: false }}
+        onConfirm={(comment) => cancelling && cancel(cancelling, comment.trim())}
+      />
     </PageBody>
+  );
+}
+
+function ViewButton({ request, onView }: { request: TravelRequest; onView: () => void }) {
+  return (
+    <Hint text="Open the itinerary">
+      <Button size="icon-sm" variant="ghost" aria-label={`View ${request.requestNo}`} onClick={onView}>
+        <Eye />
+      </Button>
+    </Hint>
   );
 }

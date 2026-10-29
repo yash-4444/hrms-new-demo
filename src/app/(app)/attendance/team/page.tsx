@@ -37,6 +37,7 @@ import { BarCompareChart } from "@/components/charts";
 import { DayDetailSheet, type DayDetail } from "@/components/attendance/day-detail-sheet";
 import {
   AMENDMENTS,
+  ATTENDANCE_CODES,
   DEPT_PUNCTUALITY_30D,
   FINALISATION_ROWS,
   OVERTIME_REPORT_30D,
@@ -51,6 +52,10 @@ import {
 } from "@/mock/attendance";
 import { DEMO_TODAY, DEPARTMENTS } from "@/mock/org";
 import { reporteesOf } from "@/mock/employees";
+import { modelAttendanceFlags, patternFlags } from "@/components/ai/embed/attendance-ai";
+import { AttendanceFlagsPanel, DayVerdictChip } from "@/components/ai/embed/attendance-ai-ui";
+
+const SEVERITY_RANK = { High: 0, Medium: 1, Low: 2 } as const;
 
 const SHORT_DEPT: Record<string, string> = {
   "Customer Success": "Cust. Success",
@@ -69,7 +74,7 @@ const STATE_OPTIONS = [
 
 export default function TeamAttendancePage() {
   const loading = useFakeLoad();
-  const { persona, role } = useApp();
+  const { persona, role, markDecided } = useApp();
 
   const scoped = role === "manager" || role === "employee";
   const [scope, setScope] = React.useState<"team" | "all">(scoped ? "team" : "all");
@@ -82,6 +87,7 @@ export default function TeamAttendancePage() {
   /* In-memory overrides — bulk approve and per-row actions land here. */
   const [approvals, setApprovals] = React.useState<Record<string, FinalisationStatus>>({});
   const [queue, setQueue] = React.useState<Amendment[]>([]);
+  const [rejecting, setRejecting] = React.useState<Amendment | null>(null);
   const [finalisation, setFinalisation] = React.useState<FinalisationRow[]>(FINALISATION_ROWS);
   const [otApproved, setOtApproved] = React.useState<Record<string, boolean>>({});
 
@@ -106,6 +112,18 @@ export default function TeamAttendancePage() {
         : TEAM_DAY_BOARD;
     return base.map((r) => ({ ...r, approval: approvals[r.code] ?? r.approval }));
   }, [scope, reporteeCodes, approvals]);
+
+  /* Model anomalies in scope, then the strongest rule-based patterns on the board. */
+  const aiFlags = React.useMemo(() => {
+    const inScope = (c: string) => scope === "all" || reporteeCodes.has(c);
+    const model = modelAttendanceFlags(inScope);
+    const seen = new Set(model.map((f) => f.subjectCode));
+    const patterns = board
+      .flatMap((r) => (seen.has(r.code) ? [] : patternFlags(r.code)))
+      .filter((f) => f.severity !== "Low")
+      .sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] || b.confidence - a.confidence);
+    return [...model, ...patterns].slice(0, 5);
+  }, [scope, reporteeCodes, board]);
 
   const rows = React.useMemo(
     () =>
@@ -231,9 +249,16 @@ export default function TeamAttendancePage() {
         cell: ({ row }) => <StatusBadge status={row.original.approval} />,
       },
       {
+        id: "ai",
+        header: "AI check",
+        enableSorting: false,
+        cell: ({ row }) => <DayVerdictChip code={row.original.code} name={row.original.name} />,
+      },
+      {
         id: "actions",
         header: "Actions",
         enableSorting: false,
+        enableHiding: false,
         cell: ({ row }) => (
           <div className="flex items-center gap-1">
             <Gated menuKey="team.attendance" action="A">
@@ -308,6 +333,7 @@ export default function TeamAttendancePage() {
         id: "decide",
         header: "Decision",
         enableSorting: false,
+        enableHiding: false,
         cell: ({ row }) => (
           <div className="flex items-center gap-1">
             <Gated menuKey="team.attendance" action="A">
@@ -315,6 +341,7 @@ export default function TeamAttendancePage() {
                 size="sm"
                 onClick={() => {
                   setQueue((q) => q.filter((a) => a.id !== row.original.id));
+                  markDecided([`regularisation:${row.original.id}`]);
                   mockAction(`${row.original.id} approved`, {
                     description: `${row.original.employeeName} · ${fmtDate(row.original.date)} · the punch pair has been written to the day record.`,
                   });
@@ -327,13 +354,7 @@ export default function TeamAttendancePage() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => {
-                  setQueue((q) => q.filter((a) => a.id !== row.original.id));
-                  mockAction(`${row.original.id} rejected`, {
-                    tone: "warning",
-                    description: "The employee has been notified and can raise a fresh request.",
-                  });
-                }}
+                onClick={() => setRejecting(row.original)}
               >
                 Reject
               </Button>
@@ -342,6 +363,7 @@ export default function TeamAttendancePage() {
         ),
       },
     ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
 
@@ -540,6 +562,14 @@ export default function TeamAttendancePage() {
         </StatRow>
       )}
 
+      {!loading && (
+        <AttendanceFlagsPanel
+          flags={aiFlags}
+          description={`Buddy-punch, impossible-travel and overtime signals from the anomaly model, plus repeat patterns across ${scope === "team" ? "your reportees" : "everyone in scope"}. AI recommends; you decide.`}
+          emptyText="No anomalies in this scope today."
+        />
+      )}
+
       {loading ? (
         <ChartSkeleton />
       ) : (
@@ -566,7 +596,7 @@ export default function TeamAttendancePage() {
               mockAction(`Filtered to ${hit.name}`, { tone: "info", description: "The day board below now shows this department only." });
             }
           }}
-          footnote="Attendance is generated for a 106-employee demo cohort, weighted toward Engineering — so Engineering's bar is the longest by headcount, not by behaviour."
+          footnote={`Attendance is generated for a ${ATTENDANCE_CODES.length}-employee demo cohort, weighted toward Engineering — so Engineering's bar is the longest by headcount, not by behaviour.`}
         />
       )}
 
@@ -790,6 +820,31 @@ export default function TeamAttendancePage() {
           mockAction(`${fmtDate(DEMO_TODAY)} finalised`, {
             description: `${board.length} day records closed by ${persona.name}. ${totals.absent} marked as loss of pay.`,
           });
+        }}
+      />
+
+      <ConfirmDialog
+        open={!!rejecting}
+        onOpenChange={(v) => !v && setRejecting(null)}
+        title={rejecting ? `Reject ${rejecting.id}?` : "Reject request"}
+        description={
+          rejecting
+            ? `${rejecting.employeeName} · ${amendmentTypeLabel(rejecting.type)} for ${fmtDate(rejecting.date)}. The day record stays as punched, and the employee sees your reason.`
+            : undefined
+        }
+        confirmLabel="Reject request"
+        destructive
+        comment={{ label: "Reason for rejecting", placeholder: "e.g. No badge swipe or visitor entry supports this time." }}
+        onConfirm={(reason) => {
+          if (!rejecting) return;
+          const r = rejecting;
+          setQueue((q) => q.filter((a) => a.id !== r.id));
+          markDecided([`regularisation:${r.id}`]);
+          mockAction(`${r.id} rejected`, {
+            tone: "warning",
+            description: `${r.employeeName} has been notified: "${reason.trim()}"`,
+          });
+          setRejecting(null);
         }}
       />
 

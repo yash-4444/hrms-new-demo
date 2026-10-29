@@ -2,19 +2,10 @@
 
 import * as React from "react";
 import Link from "next/link";
-import {
-  AlertTriangle,
-  Check,
-  Clock,
-  LifeBuoy,
-  Lock,
-  Octagon,
-  Plus,
-  Send,
-  Timer,
-} from "lucide-react";
-import { cn } from "@/lib/utils";
-import { fmtDateTime, hm, num, pct } from "@/lib/format";
+import type { ColumnDef } from "@tanstack/react-table";
+import { AlertTriangle, Check, Eye, Headset, LifeBuoy, Octagon, Plus, Timer } from "lucide-react";
+import { fmtDateTime, hm, num } from "@/lib/format";
+import { DEMO_NOW } from "@/mock/org";
 import {
   SLA_COMPLIANCE_BY_PRIORITY,
   SLA_HOURS,
@@ -22,614 +13,453 @@ import {
   TICKETS_BY_CATEGORY,
   TICKET_CATEGORIES,
   TICKET_PRIORITIES,
-  TICKET_STATS,
-  type SlaState,
+  isTicketOpen,
   type Ticket,
-  type TicketCategory,
-  type TicketMessage,
   type TicketPriority,
 } from "@/mock/workplace";
 import { mockAction, useApp } from "@/components/app-state";
+import { DataTable, MutedCell } from "@/components/data-table";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import {
-  Alert,
-  Avatar,
-  Badge,
-  EmptyState,
-  Field,
-  Hint,
-  Input,
-  Skeleton,
-  Textarea,
-} from "@/components/ui/primitives";
-import {
-  Dialog,
-  DialogBody,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  FilterSelect,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-} from "@/components/ui/overlays";
+import { Badge, Hint } from "@/components/ui/primitives";
+import { ConfirmDialog, FilterSelect } from "@/components/ui/overlays";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { BarCompareChart, DonutChart } from "@/components/charts";
 import { StatRow, StatTile } from "@/components/charts/stat-tile";
-import {
-  Gated,
-  PageBody,
-  PageHeader,
-  Section,
-  useFakeLoad,
-} from "@/components/shell/page";
+import { PersonCell } from "@/components/people/person-cell";
+import { CardsSkeleton, Gated, PageBody, PageHeader, TableSkeleton, useFakeLoad } from "@/components/shell/page";
+import { RaiseTicketDialog, type TicketPrefill } from "@/components/workplace/raise-ticket-dialog";
+import { HelpdeskDeflectDialog } from "@/components/ai/embed/helpdesk-deflect";
+import { SlaChip, TicketThreadSheet } from "@/components/workplace/ticket-thread-sheet";
 
-/* SLA chips are colour + icon + text, never colour alone. */
-const SLA_META: Record<SlaState, { label: string; icon: React.ElementType; cls: string }> = {
-  sla_ok: { label: "On track", icon: Check, cls: "border-success/25 bg-success-soft text-success-fg" },
-  sla_at_risk: { label: "At risk", icon: AlertTriangle, cls: "border-warning/30 bg-warning-soft text-warning-fg" },
-  sla_breached: { label: "Breached", icon: Octagon, cls: "border-destructive/25 bg-destructive-soft text-destructive-fg" },
-};
+/* ============================================================================
+   /helpdesk — My Tickets. Everyone sees the tickets they raised; a persona on
+   the agent queue can widen the list to every ticket (and gets the tenant
+   charts and bulk resolve). Internal notes stay hidden from requesters.
+   ========================================================================== */
 
-function SlaChip({ state, minutes }: { state: SlaState; minutes: number }) {
-  const m = SLA_META[state];
-  const Icon = m.icon;
-  const abs = Math.abs(minutes);
-  return (
-    <Hint
-      text={
-        minutes < 0
-          ? `Breached ${hm(abs)} ago`
-          : `${hm(abs)} left before the SLA is breached`
-      }
-    >
-      <span
-        className={cn(
-          "inline-flex w-fit items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs font-medium whitespace-nowrap",
-          m.cls,
-        )}
-      >
-        <Icon className="size-3" aria-hidden />
-        {m.label}
-        <span className="tnum opacity-80">
-          {minutes < 0 ? "−" : ""}
-          {hm(abs)}
-        </span>
-      </span>
-    </Hint>
-  );
-}
+const PRIORITY_RANK: Record<TicketPriority, number> = { Critical: 0, High: 1, Medium: 2, Low: 3 };
+
+type Batch = { rows: Ticket[]; clear: () => void };
 
 export default function HelpdeskPage() {
   const loading = useFakeLoad();
-  const { persona } = useApp();
+  const { persona, can } = useApp();
+  const isAgent = can("helpdesk.queue", "V");
+  const me = persona.employeeId;
 
   const [tickets, setTickets] = React.useState<Ticket[]>(TICKETS);
+  const [scope, setScope] = React.useState("mine");
   const [category, setCategory] = React.useState("all");
   const [priority, setPriority] = React.useState("all");
   const [sla, setSla] = React.useState("all");
   const [status, setStatus] = React.useState("all");
-  const [selectedId, setSelectedId] = React.useState<string | null>(TICKETS[0]?.id ?? null);
-  const [reply, setReply] = React.useState("");
-  const [internal, setInternal] = React.useState(false);
+  const [openId, setOpenId] = React.useState<string | null>(null);
   const [composeOpen, setComposeOpen] = React.useState(false);
+  /* The AI knowledge-base check runs before the ticket form opens. */
+  const [deflectOpen, setDeflectOpen] = React.useState(false);
+  const [prefill, setPrefill] = React.useState<TicketPrefill | null>(null);
+  const [resolving, setResolving] = React.useState<Batch | null>(null);
 
-  /* new-ticket form */
-  const [subject, setSubject] = React.useState("");
-  const [body, setBody] = React.useState("");
-  const [newCategory, setNewCategory] = React.useState<TicketCategory>("IT");
-  const [newPriority, setNewPriority] = React.useState<TicketPriority>("Medium");
-  const [error, setError] = React.useState<string | null>(null);
-
-  const filtered = React.useMemo(
-    () =>
-      tickets.filter(
-        (t) =>
-          (category === "all" || t.category === category) &&
-          (priority === "all" || t.priority === priority) &&
-          (sla === "all" || t.slaState === sla) &&
-          (status === "all" || t.status === status),
-      ),
-    [tickets, category, priority, sla, status],
+  const everyone = isAgent && scope === "all";
+  const scoped = React.useMemo(
+    () => (everyone ? tickets : tickets.filter((t) => t.requesterCode === me)),
+    [tickets, everyone, me],
   );
+  const rows = scoped.filter(
+    (t) =>
+      (category === "all" || t.category === category) &&
+      (priority === "all" || t.priority === priority) &&
+      (sla === "all" || t.slaState === sla) &&
+      (status === "all" || t.status === status),
+  );
+  const open = tickets.find((t) => t.id === openId) ?? null;
 
-  const selected = filtered.find((t) => t.id === selectedId) ?? filtered[0] ?? null;
-
-  const postMessage = () => {
-    if (!selected || !reply.trim()) return;
-    const msg: TicketMessage = {
-      id: `MSG-${selected.id}-${selected.thread.length}`,
-      authorCode: persona.employeeId,
-      authorName: persona.name,
-      authorRole: persona.role,
-      at: "2026-09-16T14:35:00",
-      body: reply.trim(),
-      internal,
+  const stats = React.useMemo(() => {
+    const live = scoped.filter(isTicketOpen);
+    const responses = scoped.map((t) => t.firstResponseMins).sort((a, b) => a - b);
+    return {
+      open: live.length,
+      atRisk: live.filter((t) => t.slaState === "sla_at_risk").length,
+      breached: live.filter((t) => t.slaState === "sla_breached").length,
+      medianResponse: responses.length ? responses[Math.floor(responses.length / 2)] : 0,
     };
+  }, [scoped]);
+
+  /* ----------------------------------------------------------- mutations */
+
+  const setTicketStatus = (ids: string[], next: Ticket["status"], note?: string) => {
+    const before = tickets;
     setTickets((ts) =>
       ts.map((t) =>
-        t.id === selected.id
-          ? { ...t, thread: [...t.thread, msg], updatedAt: "2026-09-16T14:35:00" }
+        ids.includes(t.id)
+          ? {
+              ...t,
+              status: next,
+              slaState: next === "resolved" ? "sla_ok" : t.slaState,
+              resolvedAt: next === "resolved" ? DEMO_NOW : null,
+              updatedAt: DEMO_NOW,
+              thread: note
+                ? [
+                    ...t.thread,
+                    {
+                      id: `${t.ticketNo}-R${t.thread.length + 1}`,
+                      authorCode: me,
+                      authorName: persona.name,
+                      authorRole: persona.role,
+                      at: DEMO_NOW,
+                      body: note,
+                      internal: false,
+                    },
+                  ]
+                : t.thread,
+            }
           : t,
       ),
     );
-    setReply("");
-    mockAction(internal ? "Internal note added" : "Reply sent", {
-      description: internal
-        ? "Visible to the assignee team only — never to the requester."
-        : `${selected.requesterName} has been notified.`,
-    });
+    const one = ids.length === 1 ? before.find((t) => t.id === ids[0]) : null;
+    mockAction(
+      one ? `${one.ticketNo} ${next === "resolved" ? "resolved" : "reopened"}` : `${ids.length} tickets resolved`,
+      {
+        description: one
+          ? `${one.subject} — ${one.requesterCode === me ? one.assigneeTeam : one.requesterName} has been notified.`
+          : "Each requester has been notified with the resolution note.",
+        undo: () => setTickets(before),
+      },
+    );
   };
 
-  const setTicketStatus = (t: Ticket, next: Ticket["status"]) => {
+  const post = (t: Ticket, body: string, internal: boolean) => {
     setTickets((ts) =>
       ts.map((x) =>
         x.id === t.id
           ? {
               ...x,
-              status: next,
-              resolvedAt: next === "resolved" ? "2026-09-16T14:35:00" : null,
-              updatedAt: "2026-09-16T14:35:00",
+              updatedAt: DEMO_NOW,
+              thread: [
+                ...x.thread,
+                {
+                  id: `${x.ticketNo}-R${x.thread.length + 1}`,
+                  authorCode: me,
+                  authorName: persona.name,
+                  authorRole: persona.role,
+                  at: DEMO_NOW,
+                  body,
+                  internal,
+                },
+              ],
             }
           : x,
       ),
     );
-    mockAction(`${t.ticketNo} ${next === "resolved" ? "resolved" : next}`, {
-      description: `${t.subject} — ${t.requesterName} has been notified.`,
+    mockAction(internal ? "Internal note added" : "Reply sent", {
+      description: internal
+        ? "Visible to the assignee team only — never to the requester."
+        : t.requesterCode === me
+          ? `${t.assigneeTeam} has been notified.`
+          : `${t.requesterName} has been notified.`,
     });
   };
 
-  const createTicket = () => {
-    if (subject.trim().length < 8) {
-      setError("Give the ticket a subject of at least 8 characters so it can be triaged.");
-      return;
+  /* -------------------------------------------------------------- columns */
+
+  const columns = React.useMemo<ColumnDef<Ticket, unknown>[]>(() => {
+    const cols: ColumnDef<Ticket, unknown>[] = [
+      {
+        accessorKey: "ticketNo",
+        header: "Ticket",
+        cell: ({ row }) => (
+          <div className="min-w-0">
+            <p className="max-w-[320px] truncate font-medium">{row.original.subject}</p>
+            <p className="tnum text-[11px] text-muted-foreground">
+              {row.original.ticketNo} · {fmtDateTime(row.original.createdAt)}
+            </p>
+          </div>
+        ),
+      },
+    ];
+    if (everyone) {
+      cols.push({
+        accessorKey: "requesterName",
+        header: "Requester",
+        cell: ({ row }) => <PersonCell name={row.original.requesterName} subtitle={row.original.requesterBranch} />,
+      });
     }
-    const hours = SLA_HOURS[newPriority];
-    const t: Ticket = {
-      id: `TKT-NEW-${tickets.length}`,
-      ticketNo: `TKT-2026-${String(5000 + tickets.length)}`,
-      category: newCategory,
-      priority: newPriority,
-      subject: subject.trim(),
-      description: body.trim() || subject.trim(),
-      requesterCode: persona.employeeId,
-      requesterName: persona.name,
-      requesterBranch: persona.branch,
-      assigneeCode: "STL-0010",
-      assigneeName: "Girish Gowda",
-      assigneeTeam: `${newCategory} Support`,
-      createdAt: "2026-09-16T14:35:00",
-      updatedAt: "2026-09-16T14:35:00",
-      status: "submitted",
-      slaHours: hours,
-      slaDueAt: "2026-09-17T14:35:00",
-      slaMinutesRemaining: hours * 60,
-      slaState: "sla_ok",
-      resolvedAt: null,
-      firstResponseMins: 0,
-      thread: [
-        {
-          id: "MSG-0",
-          authorCode: persona.employeeId,
-          authorName: persona.name,
-          authorRole: persona.role,
-          at: "2026-09-16T14:35:00",
-          body: body.trim() || subject.trim(),
-          internal: false,
-        },
-      ],
-      tags: [newCategory.toLowerCase()],
-      search: `${subject} ${persona.name} ${newCategory}`.toLowerCase(),
-    };
-    setTickets((ts) => [t, ...ts]);
-    setSelectedId(t.id);
-    setComposeOpen(false);
-    setSubject("");
-    setBody("");
-    setError(null);
-    mockAction(`${t.ticketNo} raised`, {
-      description: `${newCategory} · ${newPriority} priority · ${hours}h SLA. Assigned to ${t.assigneeTeam}.`,
-    });
-  };
+    cols.push(
+      { accessorKey: "category", header: "Category", cell: ({ row }) => <Badge variant="outline">{row.original.category}</Badge> },
+      {
+        id: "priority",
+        accessorFn: (t) => PRIORITY_RANK[t.priority],
+        header: "Priority",
+        enableColumnFilter: false,
+        cell: ({ row }) => <Badge variant="muted">{row.original.priority}</Badge>,
+      },
+      { accessorKey: "status", header: "Status", cell: ({ row }) => <StatusBadge status={row.original.status} /> },
+      {
+        accessorKey: "slaMinutesRemaining",
+        header: "SLA",
+        enableColumnFilter: false,
+        cell: ({ row }) =>
+          isTicketOpen(row.original) ? (
+            <SlaChip state={row.original.slaState} minutes={row.original.slaMinutesRemaining} />
+          ) : (
+            <MutedCell>{row.original.status === "resolved" ? "Met" : "—"}</MutedCell>
+          ),
+      },
+      { accessorKey: "assigneeTeam", header: "Assigned to", cell: ({ row }) => <MutedCell>{row.original.assigneeTeam}</MutedCell> },
+      {
+        accessorKey: "updatedAt",
+        header: "Last update",
+        cell: ({ row }) => <span className="tnum whitespace-nowrap text-xs">{fmtDateTime(row.original.updatedAt)}</span>,
+      },
+      {
+        id: "actions",
+        header: "",
+        enableSorting: false,
+        enableHiding: false,
+        cell: ({ row }) => (
+          <div className="flex justify-end" onClick={(e) => e.stopPropagation()}>
+            <Hint text="Open the thread">
+              <Button size="icon-sm" variant="ghost" aria-label={`Open ${row.original.ticketNo}`} onClick={() => setOpenId(row.original.id)}>
+                <Eye />
+              </Button>
+            </Hint>
+          </div>
+        ),
+      },
+    );
+    return cols;
+  }, [everyone]);
+
+  /* ---------------------------------------------------------------- render */
+
+  const header = (
+    <PageHeader
+      title="My tickets"
+      description="Requests you have raised with IT, Facilities, HR, Payroll and Access, each with a live SLA countdown."
+      actions={
+        <>
+          {isAgent && (
+            <Button size="sm" variant="outline" asChild>
+              <Link href="/helpdesk/queue">
+                <Headset /> Open agent queue
+              </Link>
+            </Button>
+          )}
+          <Gated menuKey="workplace.helpdesk" action="C">
+            <Button size="sm" onClick={() => setDeflectOpen(true)}>
+              <Plus /> Raise a ticket
+            </Button>
+          </Gated>
+        </>
+      }
+    />
+  );
 
   if (loading) {
     return (
       <PageBody>
-        <PageHeader title="Helpdesk" description="Loading tickets…" />
-        <Skeleton className="h-[480px]" />
+        {header}
+        <CardsSkeleton count={4} />
+        <TableSkeleton />
       </PageBody>
     );
   }
 
+  const canResolveAll = can("helpdesk.queue", "E");
+
   return (
     <PageBody>
-      <PageHeader
-        title="Helpdesk"
-        description="Every request raised against IT, Facilities, HR, Payroll and Access, with a live SLA countdown on each."
-        actions={
-          <Gated menuKey="workplace.helpdesk" action="C">
-            <Button size="sm" onClick={() => setComposeOpen(true)}>
-              <Plus /> Raise a ticket
-            </Button>
-          </Gated>
-        }
-      />
+      {header}
 
       <StatRow cols={4}>
-        <StatTile label="Open tickets" value={num(TICKET_STATS.open)} icon={LifeBuoy} onClick={() => setStatus("submitted")} />
+        <StatTile label="Open" value={num(stats.open)} icon={LifeBuoy} onClick={() => setStatus("submitted")} />
         <StatTile
           label="At risk"
-          value={num(tickets.filter((t) => t.slaState === "sla_at_risk").length)}
+          value={num(stats.atRisk)}
           icon={AlertTriangle}
-          tone="warning"
+          tone={stats.atRisk ? "warning" : "neutral"}
           hint="Under 25% of the SLA window left"
           onClick={() => setSla("sla_at_risk")}
         />
         <StatTile
           label="Breached"
-          value={num(tickets.filter((t) => t.slaState === "sla_breached").length)}
+          value={num(stats.breached)}
           icon={Octagon}
-          tone="critical"
+          tone={stats.breached ? "critical" : "neutral"}
           onClick={() => setSla("sla_breached")}
         />
         <StatTile
           label="Median first response"
-          value={hm(TICKET_STATS.avgFirstResponseMins)}
+          value={hm(stats.medianResponse)}
           icon={Timer}
-          hint="Across all open tickets"
+          hint={everyone ? "Across every ticket" : "On your tickets"}
         />
       </StatRow>
 
-      <div className="flex flex-wrap items-center gap-1.5">
-        <FilterSelect
-          label="Category"
-          value={category}
-          onValueChange={setCategory}
-          allLabel="All categories"
-          width="w-[165px]"
-          options={TICKET_CATEGORIES.map((c) => ({ value: c, label: c }))}
-        />
-        <FilterSelect
-          label="Priority"
-          value={priority}
-          onValueChange={setPriority}
-          allLabel="Any priority"
-          width="w-[160px]"
-          options={TICKET_PRIORITIES.map((p) => ({ value: p, label: p }))}
-        />
-        <FilterSelect
-          label="SLA"
-          value={sla}
-          onValueChange={setSla}
-          allLabel="Any SLA state"
-          width="w-[165px]"
-          options={[
-            { value: "sla_ok", label: "On track" },
-            { value: "sla_at_risk", label: "At risk" },
-            { value: "sla_breached", label: "Breached" },
-          ]}
-        />
-        <FilterSelect
-          label="Status"
-          value={status}
-          onValueChange={setStatus}
-          allLabel="All statuses"
-          width="w-[165px]"
-          options={[
-            { value: "submitted", label: "Open" },
-            { value: "pending", label: "Pending requester" },
-            { value: "resolved", label: "Resolved" },
-            { value: "reopened", label: "Reopened" },
-            { value: "cancelled", label: "Cancelled" },
-          ]}
-        />
-        <span className="tnum ml-auto text-xs text-muted-foreground">
-          {filtered.length} of {tickets.length} tickets
-        </span>
-      </div>
-
-      <div className="grid gap-3 lg:grid-cols-[minmax(0,360px)_1fr]">
-        {/* --------------------------------------------------- ticket list */}
-        <Section title="Tickets" bodyClassName="p-0">
-          {filtered.length === 0 ? (
-            <EmptyState
-              icon={LifeBuoy}
-              title="No tickets match"
-              description="Clear a filter to widen the queue."
-              className="border-0"
-            />
-          ) : (
-            <ul className="scrollbar-thin max-h-[620px] overflow-y-auto">
-              {filtered.map((t) => {
-                const active = t.id === selected?.id;
-                return (
-                  <li key={t.id} className="border-b border-border last:border-0">
-                    <button
-                      type="button"
-                      onClick={() => setSelectedId(t.id)}
-                      aria-current={active ? "true" : undefined}
-                      className={cn(
-                        "flex w-full flex-col gap-1.5 px-4 py-2.5 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring",
-                        active ? "bg-primary-soft" : "hover:bg-muted/60",
-                      )}
-                    >
-                      <span className="flex items-start justify-between gap-2">
-                        <span className="min-w-0">
-                          <span className="block truncate text-xs font-medium">{t.subject}</span>
-                          <span className="tnum block truncate text-[11px] text-muted-foreground">
-                            {t.ticketNo} · {t.requesterName} · {t.assigneeTeam}
-                          </span>
-                        </span>
-                        <Badge variant="muted" className="shrink-0">
-                          {t.priority}
-                        </Badge>
-                      </span>
-                      <span className="flex flex-wrap items-center gap-1.5">
-                        <Badge variant="outline">{t.category}</Badge>
-                        <StatusBadge status={t.status} />
-                        <SlaChip state={t.slaState} minutes={t.slaMinutesRemaining} />
-                      </span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </Section>
-
-        {/* --------------------------------------------------- the thread */}
-        {selected ? (
-          <Card className="flex flex-col overflow-hidden">
-            <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border bg-subtle p-4">
-              <div className="min-w-0">
-                <p className="text-sm font-semibold">{selected.subject}</p>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  {selected.ticketNo} · raised by{" "}
-                  <Link href={`/employees/${selected.requesterCode}`} className="hover:underline">
-                    {selected.requesterName}
-                  </Link>{" "}
-                  ({selected.requesterBranch}) · {fmtDateTime(selected.createdAt)}
-                </p>
-                <div className="mt-1.5 flex flex-wrap gap-1">
-                  <Badge variant="muted">{selected.category}</Badge>
-                  <Badge variant="muted">{selected.priority}</Badge>
-                  <Badge variant="outline">Assigned to {selected.assigneeName}</Badge>
-                  {selected.tags.map((t) => (
-                    <Badge key={t} variant="outline">
-                      #{t}
-                    </Badge>
-                  ))}
-                </div>
-              </div>
-              <div className="flex flex-col items-end gap-1.5">
-                <StatusBadge status={selected.status} size="md" />
-                <SlaChip state={selected.slaState} minutes={selected.slaMinutesRemaining} />
-                <span className="tnum text-[10px] text-muted-foreground">
-                  {selected.slaHours}h SLA · due {fmtDateTime(selected.slaDueAt)}
-                </span>
-              </div>
-            </div>
-
-            {selected.slaState === "sla_breached" && (
-              <div className="border-b border-border px-4 py-2.5">
-                <Alert tone="danger" icon={Octagon} title="SLA breached">
-                  This ticket passed its {selected.slaHours}-hour commitment{" "}
-                  {hm(Math.abs(selected.slaMinutesRemaining))} ago. It appears on the weekly SLA
-                  report until it is resolved.
-                </Alert>
-              </div>
+      <DataTable<Ticket>
+        columns={columns}
+        data={rows}
+        getRowId={(t) => t.id}
+        searchKeys={["search", "subject"]}
+        searchPlaceholder="Search ticket, subject or tag…"
+        exportName={everyone ? "helpdesk-tickets" : "my-tickets"}
+        onRowClick={(t) => setOpenId(t.id)}
+        enableSelection={everyone && canResolveAll}
+        rowTone={(t) => (isTicketOpen(t) && t.slaState === "sla_breached" ? "danger" : undefined)}
+        emptyIcon={LifeBuoy}
+        emptyTitle={scoped.length ? "No ticket matches these filters" : "You have not raised any tickets"}
+        emptyDescription={
+          scoped.length
+            ? "Clear a filter to see the rest."
+            : "Something broken, or need access? Raise a ticket and the owning team picks it up within its SLA."
+        }
+        filters={
+          <>
+            {isAgent && (
+              <FilterSelect
+                label="Scope"
+                value={scope}
+                onValueChange={setScope}
+                allLabel="Every ticket"
+                width="w-[160px]"
+                options={[{ value: "mine", label: "Raised by me" }]}
+              />
             )}
+            <FilterSelect
+              label="Category"
+              value={category}
+              onValueChange={setCategory}
+              allLabel="All categories"
+              width="w-[165px]"
+              options={TICKET_CATEGORIES.map((c) => ({ value: c, label: c }))}
+            />
+            <FilterSelect
+              label="Priority"
+              value={priority}
+              onValueChange={setPriority}
+              allLabel="Any priority"
+              width="w-[160px]"
+              options={TICKET_PRIORITIES.map((p) => ({ value: p, label: p }))}
+            />
+            <FilterSelect
+              label="SLA"
+              value={sla}
+              onValueChange={setSla}
+              allLabel="Any SLA state"
+              width="w-[165px]"
+              options={[
+                { value: "sla_ok", label: "On track" },
+                { value: "sla_at_risk", label: "At risk" },
+                { value: "sla_breached", label: "Breached" },
+              ]}
+            />
+            <FilterSelect
+              label="Status"
+              value={status}
+              onValueChange={setStatus}
+              allLabel="All statuses"
+              width="w-[165px]"
+              options={[
+                { value: "submitted", label: "Open" },
+                { value: "pending", label: "Pending requester" },
+                { value: "resolved", label: "Resolved" },
+                { value: "reopened", label: "Reopened" },
+                { value: "cancelled", label: "Cancelled" },
+              ]}
+            />
+          </>
+        }
+        bulkActions={(sel, clear) => {
+          const live = sel.filter((t) => t.status !== "resolved" && t.status !== "cancelled");
+          return (
+            <Gated menuKey="helpdesk.queue" action="E">
+              <Button size="sm" disabled={!live.length} onClick={() => setResolving({ rows: live, clear })}>
+                <Check /> Resolve {live.length}
+              </Button>
+            </Gated>
+          );
+        }}
+      />
 
-            {/* conversation */}
-            <ul className="scrollbar-thin flex max-h-[420px] flex-1 flex-col gap-3 overflow-y-auto p-4">
-              {selected.thread.map((m) => (
-                <li
-                  key={m.id}
-                  className={cn(
-                    "rounded-md border p-3",
-                    m.internal
-                      ? "border-warning/30 bg-warning-soft/40"
-                      : "border-border bg-card",
-                  )}
-                >
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Avatar name={m.authorName} size={22} />
-                    <span className="text-xs font-medium">{m.authorName}</span>
-                    <span className="text-[10px] text-muted-foreground">{m.authorRole}</span>
-                    {m.internal && (
-                      <Badge variant="outline" className="border-warning/40 text-warning-fg">
-                        <Lock className="size-3" aria-hidden /> Internal note
-                      </Badge>
-                    )}
-                    <span className="tnum ml-auto text-[10px] text-muted-foreground">
-                      {fmtDateTime(m.at)}
-                    </span>
-                  </div>
-                  <p className="mt-1.5 whitespace-pre-line text-xs leading-relaxed">{m.body}</p>
-                  {m.internal && (
-                    <p className="mt-1.5 border-t border-warning/25 pt-1.5 text-[10px] text-warning-fg">
-                      Internal note — not visible to the requester.
-                    </p>
-                  )}
-                </li>
-              ))}
-            </ul>
+      {everyone && (
+        <div className="grid gap-3 lg:grid-cols-2">
+          <DonutChart
+            title="Tickets by category"
+            description="Where the support load actually sits."
+            data={TICKETS_BY_CATEGORY.map((c) => ({ name: c.category, value: c.on_track + c.at_risk + c.breached }))}
+            centreValue={num(tickets.length)}
+            centreLabel="tickets"
+            height={260}
+            onSliceClick={(row) => setCategory(String(row.name))}
+          />
+          <BarCompareChart
+            title="SLA attainment by priority"
+            description="How each priority band is performing against its commitment."
+            data={SLA_COMPLIANCE_BY_PRIORITY.map((p) => ({
+              name: `${p.priority} (${SLA_HOURS[p.priority as TicketPriority]}h)`,
+              met: p.met,
+              breached: p.breached,
+            }))}
+            xKey="name"
+            series={[
+              { key: "met", label: "Met" },
+              { key: "breached", label: "Breached" },
+            ]}
+            stacked
+            horizontal
+            height={260}
+          />
+        </div>
+      )}
 
-            {/* composer */}
-            <div className="border-t border-border p-3">
-              <div className="mb-2 flex items-center gap-1.5">
-                <Button
-                  size="sm"
-                  variant={!internal ? "default" : "outline"}
-                  aria-pressed={!internal}
-                  onClick={() => setInternal(false)}
-                >
-                  <Send /> Reply to requester
-                </Button>
-                <Button
-                  size="sm"
-                  variant={internal ? "default" : "outline"}
-                  aria-pressed={internal}
-                  onClick={() => setInternal(true)}
-                >
-                  <Lock /> Internal note
-                </Button>
-                <div className="ml-auto flex gap-1.5">
-                  {selected.status !== "resolved" ? (
-                    <Gated menuKey="workplace.helpdesk" action="E">
-                      <Button size="sm" variant="outline" onClick={() => setTicketStatus(selected, "resolved")}>
-                        <Check /> Resolve
-                      </Button>
-                    </Gated>
-                  ) : (
-                    <Gated menuKey="workplace.helpdesk" action="E">
-                      <Button size="sm" variant="outline" onClick={() => setTicketStatus(selected, "reopened")}>
-                        Reopen
-                      </Button>
-                    </Gated>
-                  )}
-                </div>
-              </div>
+      <TicketThreadSheet
+        ticket={open}
+        onOpenChange={(v) => !v && setOpenId(null)}
+        onPost={post}
+        onStatus={(t, next) => setTicketStatus([t.id], next)}
+      />
 
-              <Textarea
-                value={reply}
-                onChange={(e) => setReply(e.target.value)}
-                placeholder={
-                  internal
-                    ? "Context for the team — the requester will never see this…"
-                    : `Reply to ${selected.requesterName}…`
-                }
-                aria-label={internal ? "Internal note" : "Reply to requester"}
-                className={cn("text-xs", internal && "border-warning/40 bg-warning-soft/30")}
-              />
+      <HelpdeskDeflectDialog
+        open={deflectOpen}
+        onOpenChange={setDeflectOpen}
+        onContinue={(p) => {
+          setPrefill(p);
+          setDeflectOpen(false);
+          setComposeOpen(true);
+        }}
+      />
 
-              <div className="mt-2 flex items-center gap-2">
-                <p className="text-[10px] text-muted-foreground">
-                  {internal
-                    ? "Stored on the ticket, visible to the assignee team only."
-                    : `${selected.requesterName} receives an email and an in-app notification.`}
-                </p>
-                <Button size="sm" className="ml-auto" disabled={!reply.trim()} onClick={postMessage}>
-                  {internal ? <Lock /> : <Send />}
-                  {internal ? "Add note" : "Send reply"}
-                </Button>
-              </div>
-            </div>
-          </Card>
-        ) : (
-          <EmptyState icon={LifeBuoy} title="Select a ticket" description="Pick one from the queue to open its thread." />
-        )}
-      </div>
+      <RaiseTicketDialog
+        open={composeOpen}
+        onOpenChange={setComposeOpen}
+        prefill={prefill}
+        employeeCode={me}
+        onRaised={(t) => {
+          setTickets((ts) => [t, ...ts]);
+          setOpenId(t.id);
+          mockAction(`${t.ticketNo} raised`, {
+            description: `${t.category} · ${t.priority} priority · ${t.slaHours}h SLA. Assigned to ${t.assigneeTeam}.`,
+          });
+        }}
+      />
 
-      <div className="grid gap-3 lg:grid-cols-2">
-        <DonutChart
-          title="Tickets by category"
-          description="Where the support load actually sits."
-          data={TICKETS_BY_CATEGORY.map((c) => ({
-            name: c.category,
-            value: c.on_track + c.at_risk + c.breached,
-          }))}
-          centreValue={num(tickets.length)}
-          centreLabel="tickets"
-          height={260}
-          onSliceClick={(row) => setCategory(String(row.name))}
-        />
-        <BarCompareChart
-          title="SLA attainment by priority"
-          description="How each priority band is performing against its commitment."
-          data={SLA_COMPLIANCE_BY_PRIORITY.map((p) => ({
-            name: `${p.priority} (${SLA_HOURS[p.priority as TicketPriority]}h)`,
-            met: p.met,
-            breached: p.breached,
-          }))}
-          xKey="name"
-          series={[
-            { key: "met", label: "Met" },
-            { key: "breached", label: "Breached" },
-          ]}
-          stacked
-          horizontal
-          height={260}
-        />
-      </div>
-
-      {/* ------------------------------------------------------ new ticket */}
-      <Dialog open={composeOpen} onOpenChange={setComposeOpen}>
-        <DialogContent size="md">
-          <DialogHeader>
-            <DialogTitle>Raise a ticket</DialogTitle>
-            <DialogDescription>
-              Priority sets the SLA clock: Critical 4h, High 8h, Medium 24h, Low 72h.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogBody className="flex flex-col gap-3">
-            <Field
-              label="Subject"
-              htmlFor="tkt-subject"
-              required
-              error={error ?? undefined}
-              hint="Say what is broken and where, e.g. “VPN drops every 20 minutes on the Pune office Wi-Fi”."
-            >
-              <Input
-                id="tkt-subject"
-                value={subject}
-                onChange={(e) => {
-                  setSubject(e.target.value);
-                  if (error) setError(null);
-                }}
-                aria-invalid={!!error}
-              />
-            </Field>
-
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Category" htmlFor="tkt-cat" required>
-                <Select value={newCategory} onValueChange={(v) => setNewCategory(v as TicketCategory)}>
-                  <SelectTrigger id="tkt-cat">
-                    <span className="text-xs">{newCategory}</span>
-                  </SelectTrigger>
-                  <SelectContent>
-                    {TICKET_CATEGORIES.map((c) => (
-                      <SelectItem key={c} value={c}>
-                        {c}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
-              <Field label="Priority" htmlFor="tkt-pri" required hint={`${SLA_HOURS[newPriority]}h SLA`}>
-                <Select value={newPriority} onValueChange={(v) => setNewPriority(v as TicketPriority)}>
-                  <SelectTrigger id="tkt-pri">
-                    <span className="text-xs">{newPriority}</span>
-                  </SelectTrigger>
-                  <SelectContent>
-                    {TICKET_PRIORITIES.map((p) => (
-                      <SelectItem key={p} value={p}>
-                        {p} · {SLA_HOURS[p]}h
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
-            </div>
-
-            <Field label="Description" htmlFor="tkt-body" hint="Steps to reproduce, error messages, anything you have already tried.">
-              <Textarea id="tkt-body" value={body} onChange={(e) => setBody(e.target.value)} />
-            </Field>
-          </DialogBody>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setComposeOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={createTicket}>
-              <Check /> Raise ticket
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ConfirmDialog
+        open={!!resolving}
+        onOpenChange={(v) => !v && setResolving(null)}
+        title={`Resolve ${resolving?.rows.length ?? 0} ticket${resolving?.rows.length === 1 ? "" : "s"}?`}
+        description="Each requester receives your resolution note and can reopen the ticket within 7 days."
+        confirmLabel="Resolve"
+        comment={{ label: "Resolution note", placeholder: "e.g. Fixed by the 14 Sep VPN policy change — please reconnect once." }}
+        onConfirm={(note) => {
+          if (!resolving) return;
+          setTicketStatus(
+            resolving.rows.map((t) => t.id),
+            "resolved",
+            note,
+          );
+          resolving.clear();
+        }}
+      />
     </PageBody>
   );
 }

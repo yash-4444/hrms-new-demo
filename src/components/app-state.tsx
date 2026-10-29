@@ -14,6 +14,8 @@ import {
   type Persona,
   type RoleId,
 } from "@/lib/rbac";
+import { DEMO_NOW, DEMO_TODAY } from "@/mock/org";
+import { approvalsFor } from "@/mock/self-service";
 
 /* ============================================================================
    The demo's nervous system.
@@ -21,8 +23,44 @@ import {
    Holds the active persona, the in-memory mutation log, notification and
    approval counts, and the punch clock. Switching persona re-renders the whole
    app WITHOUT a reload — nav, dashboard and every screen's actions change.
-   Nothing here persists past a refresh; that is by design.
+   Only the chosen persona survives a refresh (sessionStorage), so a deep link
+   reloaded mid-demo keeps its viewer; every mutation is in-memory by design.
    ========================================================================== */
+
+/* ------------------------------------------------------------- demo clock */
+
+/** The demo's "now" in epoch ms — DEMO_NOW, never the wall clock. */
+const DEMO_NOW_MS = new Date(DEMO_NOW).getTime();
+
+/** Today's general shift: 09:30–18:30 with a 1 h break = 8 h of work. */
+export const SHIFT_TARGET_MINUTES = 480;
+
+/** Today's punch-in on the demo date — the one anchor every punch timer uses. */
+export const DEMO_PUNCH_IN = new Date(`${DEMO_TODAY}T09:36:00`);
+
+let clockBoot: number | null = null;
+
+/** Demo "now" that advances in real time from DEMO_NOW once the page is open. */
+export function demoNowMs() {
+  if (typeof window === "undefined") return DEMO_NOW_MS;
+  clockBoot ??= Date.now();
+  return DEMO_NOW_MS + (Date.now() - clockBoot);
+}
+
+/**
+ * Ticking demo clock for live timers. The first render returns DEMO_NOW
+ * exactly, so the server HTML and the hydrating client agree.
+ */
+export function useDemoNow(tickMs = 1000) {
+  const [now, setNow] = React.useState(DEMO_NOW_MS);
+  React.useEffect(() => {
+    const tick = () => setNow(demoNowMs());
+    tick();
+    const t = setInterval(tick, tickMs);
+    return () => clearInterval(t);
+  }, [tickMs]);
+  return now;
+}
 
 export interface AppNotification {
   id: string;
@@ -48,8 +86,15 @@ interface AppState {
   markAllRead: () => void;
   markRead: (id: string) => void;
 
+  /** Open items in the persona's inbox — derived from `approvalsFor` minus
+      `decidedApprovals`, so the sidebar badge, the dashboard and /approvals
+      can never disagree. */
   approvalCount: number;
-  setApprovalCount: React.Dispatch<React.SetStateAction<number>>;
+  /** Inbox item ids decided anywhere this session (dashboard or /approvals),
+      so a decision on one screen does not reappear on the other. */
+  decidedApprovals: ReadonlySet<string>;
+  /** Mark inbox items decided (or undecided, for Undo). */
+  markDecided: (ids: string[], decided?: boolean) => void;
   exceptionCount: number;
   setExceptionCount: React.Dispatch<React.SetStateAction<number>>;
   ticketCount: number;
@@ -76,7 +121,7 @@ const SEED_NOTIFICATIONS: AppNotification[] = [
     body: "Kavya Iyer applied for 3 days of Earned Leave (12–14 Oct).",
     at: "2026-09-16T09:12:00",
     read: false,
-    href: "/leave/approvals",
+    href: "/approvals",
     tone: "warning",
   },
   {
@@ -126,37 +171,65 @@ const SEED_NOTIFICATIONS: AppNotification[] = [
   },
 ];
 
-const APPROVALS_BY_ROLE: Record<RoleId, number> = {
-  employee: 0,
-  manager: 7,
-  hr_admin: 12,
-  payroll_admin: 4,
-  recruiter: 3,
-  tenant_owner: 14,
-};
+/** Badge count = items in the persona's unified inbox (the /approvals page),
+    exactly what its "Awaiting you" tile counts — read-only personas included. */
+function inboxCount(r: RoleId, decided: ReadonlySet<string>) {
+  const p = personaById(r);
+  return approvalsFor(r, p.employeeId, p.name).filter((i) => !decided.has(i.id)).length;
+}
+
+const PERSONA_KEY = "hrms.persona";
+
+function readStoredRole(): RoleId | null {
+  try {
+    const v = window.sessionStorage.getItem(PERSONA_KEY);
+    return v && PERSONAS.some((p) => p.id === v) ? (v as RoleId) : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeRole(r: RoleId) {
+  try {
+    window.sessionStorage.setItem(PERSONA_KEY, r);
+  } catch {
+    /* storage blocked — the persona simply resets on reload */
+  }
+}
 
 export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const [role, setRoleState] = React.useState<RoleId>("hr_admin");
   const [notifications, setNotifications] = React.useState(SEED_NOTIFICATIONS);
-  const [approvalCount, setApprovalCount] = React.useState(APPROVALS_BY_ROLE.hr_admin);
+  const [decidedApprovals, setDecidedApprovals] = React.useState<ReadonlySet<string>>(() => new Set());
+  const approvalCount = React.useMemo(() => inboxCount(role, decidedApprovals), [role, decidedApprovals]);
+  const markDecided = React.useCallback((ids: string[], decided = true) => {
+    setDecidedApprovals((s) => {
+      const next = new Set(s);
+      ids.forEach((id) => (decided ? next.add(id) : next.delete(id)));
+      return next;
+    });
+  }, []);
   const [exceptionCount, setExceptionCount] = React.useState(3);
   const [punchedIn, setPunchedIn] = React.useState(true);
-  const [punchedInAt, setPunchedInAt] = React.useState<Date | null>(null);
+  const [punchedInAt, setPunchedInAt] = React.useState<Date | null>(DEMO_PUNCH_IN);
   const [commandOpen, setCommandOpen] = React.useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false);
   const pathname = usePathname();
 
-  // Punch-in time is set on the client only, so SSR and the first client render
-  // agree (a Date.now() in the initial state would hydrate-mismatch).
-  React.useEffect(() => {
-    const t = new Date();
-    t.setHours(9, 42, 0, 0);
-    setPunchedInAt(t);
+  /* Restore the persona of this tab before the first paint. The server HTML is
+     always HR Admin; a layout effect swaps it in before the browser paints, so
+     a reloaded deep link never flashes the wrong persona or "Access denied". */
+  React.useLayoutEffect(() => {
+    const stored = readStoredRole();
+    if (stored && stored !== "hr_admin") {
+      setRoleState(stored);
+    }
+    document.documentElement.removeAttribute("data-persona-restoring");
   }, []);
 
   const setRole = React.useCallback((r: RoleId) => {
     setRoleState(r);
-    setApprovalCount(APPROVALS_BY_ROLE[r]);
+    storeRole(r);
     const p = personaById(r);
     toast.success(`Now viewing as ${p.name}`, {
       description: `${p.role} · ${p.branch}. Navigation and available actions have changed.`,
@@ -169,10 +242,15 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
         e.preventDefault();
         setCommandOpen((v) => !v);
       }
-      // Alt+1..6 jumps between personas mid-demo
-      if (e.altKey && /^[1-6]$/.test(e.key)) {
-        e.preventDefault();
-        setRole(PERSONAS[Number(e.key) - 1].id);
+      // Alt+1..9, Alt+0 jumps between the first ten personas mid-demo.
+      // e.code, not e.key: on macOS Option+digit types a symbol.
+      const digit = /^Digit(\d)$/.exec(e.code)?.[1];
+      if (e.altKey && !e.metaKey && !e.ctrlKey && digit) {
+        const persona = PERSONAS[digit === "0" ? 9 : Number(digit) - 1];
+        if (persona) {
+          e.preventDefault();
+          setRole(persona.id);
+        }
       }
     };
     window.addEventListener("keydown", onKey);
@@ -196,7 +274,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       markAllRead: () => setNotifications((ns) => ns.map((n) => ({ ...n, read: true }))),
       markRead: (id) => setNotifications((ns) => ns.map((n) => (n.id === id ? { ...n, read: true } : n))),
       approvalCount,
-      setApprovalCount,
+      decidedApprovals,
+      markDecided,
       exceptionCount,
       setExceptionCount,
       ticketCount: 9,
@@ -204,7 +283,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       punchedInAt,
       punchIn: () => {
         setPunchedIn(true);
-        setPunchedInAt(new Date());
+        setPunchedInAt(new Date(demoNowMs()));
         toast.success("Punched in", { description: "Your shift timer has started." });
       },
       punchOut: () => {
@@ -216,7 +295,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       sidebarCollapsed,
       toggleSidebar: () => setSidebarCollapsed((v) => !v),
     }),
-    [role, setRole, notifications, approvalCount, exceptionCount, punchedIn, punchedInAt, commandOpen, sidebarCollapsed],
+    [role, setRole, notifications, approvalCount, decidedApprovals, markDecided, exceptionCount, punchedIn, punchedInAt, commandOpen, sidebarCollapsed],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

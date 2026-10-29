@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowUpRight,
   BarChart3,
@@ -16,9 +16,8 @@ import {
 import { inr, inrCompact, num, pct } from "@/lib/format";
 import { BRANCHES, DEPARTMENTS, deptName } from "@/mock/org";
 import { PEOPLE_STATS } from "@/mock/employees";
+import { PAY_RUNS, payRunRows } from "@/mock/payroll";
 import {
-  ATTRITION,
-  ATTRITION_TREND,
   BRANCH_DISTRIBUTION,
   COST_BY_BRANCH,
   COST_BY_CENTRE,
@@ -26,8 +25,6 @@ import {
   GENDER_BY_DEPT,
   GENDER_DISTRIBUTION,
   GRADE_DISTRIBUTION,
-  HEADCOUNT_24M,
-  JOINERS_LEAVERS_12M,
   LEAVE_UTILISATION,
   PAYROLL_COST_TREND,
   PERIODS,
@@ -36,6 +33,10 @@ import {
   SPAN_OF_CONTROL,
   TENURE_BANDS,
   TIME_TO_FILL,
+  attritionFor,
+  employeesMatching,
+  headcountTrend,
+  scopeMatcher,
   trimTo,
   type Period,
 } from "@/mock/insights";
@@ -71,6 +72,15 @@ import {
   PageHeader,
   useFakeLoad,
 } from "@/components/shell/page";
+import {
+  ATTRITION_INSIGHT,
+  AnalyticsAskBar,
+  COST_INSIGHT,
+  DIVERSITY_INSIGHT,
+  HIRING_INSIGHT,
+  InsightCallout,
+  LEAVE_INSIGHT,
+} from "@/components/ai/embed/analytics-ai";
 
 /* ============================================================================
    /analytics — the chart surface of the product.
@@ -88,13 +98,55 @@ interface Drill {
   href?: string;
 }
 
+const TABS = ["workforce", "diversity", "cost", "hiring", "time"];
+
+/** `?tab=` deep links (dashboard KPI tiles) — anything unknown opens Workforce. */
+const tabFromParam = (value: string | null) => (value && TABS.includes(value) ? value : "workforce");
+
+/** The open pay run's rows — a filtered cost is the slice's share of this run. */
+const RUN_ROWS = payRunRows(PAY_RUNS[0].id);
+const RUN_GROSS = RUN_ROWS.reduce((a, r) => a + r.gross, 0);
+
+/** Locations that carry payroll cost — the "Cost by branch" copy counts these. */
+const STAFFED_BRANCHES = COST_BY_BRANCH.filter((b) => b.value > 0).length;
+
+const FUNNEL_IN = RECRUITMENT_FUNNEL[0]?.value ?? 0;
+const FUNNEL_OUT = RECRUITMENT_FUNNEL.at(-1)?.value ?? 0;
+const SOURCE_TOTAL = SOURCE_MIX.reduce((a, b) => a + b.value, 0);
+const TOP_SOURCE = SOURCE_MIX.reduce((a, b) => (b.value > a.value ? b : a), SOURCE_MIX[0]);
+
 export default function AnalyticsPage() {
+  return (
+    <React.Suspense
+      fallback={
+        <PageBody>
+          <CardsSkeleton count={4} />
+          <ChartSkeleton />
+        </PageBody>
+      }
+    >
+      <Analytics />
+    </React.Suspense>
+  );
+}
+
+function Analytics() {
   const loading = useFakeLoad();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const spKey = searchParams.toString();
+  const [tab, setTab] = React.useState(() => tabFromParam(searchParams.get("tab")));
   const [period, setPeriod] = React.useState<Period>("12m");
   const [branch, setBranch] = React.useState("all");
   const [department, setDepartment] = React.useState("all");
   const [drill, setDrill] = React.useState<Drill | null>(null);
+
+  /* A dashboard tile links here with ?tab= — follow it when the query changes. */
+  const [seenKey, setSeenKey] = React.useState(spKey);
+  if (seenKey !== spKey) {
+    setSeenKey(spKey);
+    setTab(tabFromParam(new URLSearchParams(spKey).get("tab")));
+  }
 
   const scope = React.useMemo(() => {
     const parts: string[] = [];
@@ -103,52 +155,59 @@ export default function AnalyticsPage() {
     return parts.length ? parts.join(" · ") : "All branches · all departments";
   }, [branch, department]);
 
-  /* Filters scale the derived series so the numbers move when you filter. */
-  const scale = React.useMemo(() => {
-    let s = 1;
-    if (branch !== "all") {
-      const b = BRANCHES.find((x) => x.id === branch);
-      s *= (b?.headcount ?? PEOPLE_STATS.headcount) / PEOPLE_STATS.headcount;
-    }
-    if (department !== "all") {
-      const d = DEPARTMENTS.find((x) => x.id === department);
-      s *= (d?.headcount ?? PEOPLE_STATS.headcount) / PEOPLE_STATS.headcount;
-    }
-    return s;
+  /* Headcount, movement and attrition are recomputed for the filtered slice,
+     so opening + joiners − leavers = closing holds under every filter. */
+  const match = React.useMemo(() => scopeMatcher(branch, department), [branch, department]);
+  const trend = React.useMemo(() => headcountTrend(24, match), [match]);
+  const attrition = React.useMemo(() => attritionFor(match), [match]);
+
+  /* Payroll cost: the slice's share of the open run's gross. */
+  const costScale = React.useMemo(
+    () => RUN_ROWS.filter((r) => match(r)).reduce((a, r) => a + r.gross, 0) / Math.max(1, RUN_GROSS),
+    [match],
+  );
+
+  const scopeQuery = React.useMemo(() => {
+    const q = new URLSearchParams();
+    if (branch !== "all") q.set("branch", branch);
+    if (department !== "all") q.set("dept", department);
+    return q;
   }, [branch, department]);
+  const employeesHref = (extra?: Record<string, string>) => {
+    const q = new URLSearchParams(scopeQuery);
+    Object.entries(extra ?? {}).forEach(([k, v]) => q.set(k, v));
+    const s = q.toString();
+    return s ? `/employees?${s}` : "/employees";
+  };
 
   const headcountSeries = React.useMemo(
-    () =>
-      trimTo(HEADCOUNT_24M, period).map((p) => ({
-        month: p.month,
-        headcount: Math.round(p.headcount * scale),
-      })),
-    [period, scale],
+    () => trimTo(trend, period).map((p) => ({ month: p.month, headcount: p.headcount })),
+    [trend, period],
   );
 
   const attritionSeries = React.useMemo(
-    () => trimTo(ATTRITION_TREND, period).map((p) => ({ month: p.month, attrition: p.attrition })),
-    [period],
+    () => trimTo(trend, period).map((p) => ({ month: p.month, attrition: p.attritionPct })),
+    [trend, period],
   );
 
   const movementSeries = React.useMemo(
     () =>
-      trimTo(JOINERS_LEAVERS_12M, period).map((p) => ({
+      trimTo(trend, period).map((p) => ({
         month: p.month,
-        joiners: Math.max(0, Math.round(p.joiners * scale)),
-        leavers: Math.max(0, Math.round(p.leavers * scale)),
+        joiners: p.joiners,
+        leavers: p.leavers,
       })),
-    [period, scale],
+    [trend, period],
   );
 
   const costSeries = React.useMemo(
     () =>
       trimTo(PAYROLL_COST_TREND, period).map((p) => ({
         month: p.month,
-        gross: Math.round(p.gross * scale),
-        employerCost: Math.round(p.employerCost * scale),
+        gross: Math.round(p.gross * costScale),
+        employer: Math.round(p.employer * costScale),
       })),
-    [period, scale],
+    [period, costScale],
   );
 
   const deptRows = React.useMemo(
@@ -237,6 +296,8 @@ export default function AnalyticsPage() {
         }
       />
 
+      <AnalyticsAskBar />
+
       {/* -------------------------------------------------------- KPI row */}
       <StatRow cols={4}>
         <StatTile
@@ -247,37 +308,46 @@ export default function AnalyticsPage() {
           goodDirection="up"
           icon={Users}
           spark={headcountSeries.map((p) => ({ value: p.headcount }))}
-          href="/employees"
+          href={employeesHref()}
         />
         <StatTile
           label="Attrition (rolling 12m)"
-          value={pct(ATTRITION.rate)}
-          deltaValue={ATTRITION.delta}
+          value={pct(attrition.rate)}
+          deltaValue={attrition.delta}
           deltaLabel="vs prior year"
           goodDirection="down"
           icon={TrendingDown}
-          tone={ATTRITION.rate > 14 ? "warning" : "good"}
-          footer={`${ATTRITION.leavers12m} exits · ${pct(ATTRITION.voluntaryPct)} voluntary`}
+          tone={attrition.rate > 14 ? "warning" : "good"}
+          footer={`${attrition.leavers12m} exits · ${pct(attrition.voluntaryPct)} voluntary`}
           onClick={() =>
             openDrill({
               title: "Attrition breakdown",
               subtitle: `Rolling 12 months · ${scope}`,
               rows: [
-                { label: "Total exits", value: num(ATTRITION.leavers12m) },
-                { label: "Attrition rate", value: pct(ATTRITION.rate) },
-                { label: "Prior-year rate", value: pct(ATTRITION.prevRate) },
-                { label: "Voluntary", value: pct(ATTRITION.voluntaryPct) },
-                { label: "Regrettable", value: pct(ATTRITION.regrettablePct) },
-                { label: "Currently on notice", value: num(PEOPLE_STATS.onNotice) },
+                { label: "Total exits", value: num(attrition.leavers12m) },
+                { label: "Attrition rate", value: pct(attrition.rate) },
+                { label: "Prior-year rate", value: pct(attrition.prevRate) },
+                { label: "Voluntary", value: pct(attrition.voluntaryPct) },
+                { label: "Regrettable", value: pct(attrition.regrettablePct) },
+                {
+                  label: "Currently on notice",
+                  value: num(
+                    employeesMatching({
+                      branch: branch === "all" ? undefined : branch,
+                      department: department === "all" ? undefined : department,
+                      status: "notice",
+                    }).length,
+                  ),
+                },
               ],
-              href: "/employees?status=notice",
+              href: employeesHref({ status: "notice" }),
             })
           }
         />
         <StatTile
           label="Monthly payroll cost"
-          value={inrCompact((monthlyCost?.gross ?? 0) + (monthlyCost?.employerCost ?? 0))}
-          hint={`Gross ${inrCompact(monthlyCost?.gross ?? 0)} + employer ${inrCompact(monthlyCost?.employerCost ?? 0)}`}
+          value={inrCompact((monthlyCost?.gross ?? 0) + (monthlyCost?.employer ?? 0))}
+          hint={`${PAY_RUNS[0].country} payroll · gross ${inrCompact(monthlyCost?.gross ?? 0)} + employer ${inrCompact(monthlyCost?.employer ?? 0)}`}
           icon={Wallet}
           href="/payroll/runs"
         />
@@ -301,7 +371,7 @@ export default function AnalyticsPage() {
       </StatRow>
 
       {/* ---------------------------------------------------------- tabs */}
-      <Tabs defaultValue="workforce">
+      <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
           <TabsTrigger value="workforce">
             <Users /> Workforce
@@ -322,6 +392,7 @@ export default function AnalyticsPage() {
 
         {/* ------------------------------------------------- workforce */}
         <TabsContent value="workforce" className="flex flex-col gap-3">
+          <InsightCallout insight={ATTRITION_INSIGHT} />
           <TrendAreaChart
             title="Headcount trend"
             description={`Closing headcount at the end of each month. ${scope}.`}
@@ -329,7 +400,7 @@ export default function AnalyticsPage() {
             xKey="month"
             series={[{ key: "headcount", label: "Headcount" }]}
             height={250}
-            footnote="Back-computed from real joining dates in the employee master, so it reconciles with the directory."
+            footnote="Real joining and exit dates from the employee master, plus the exits of people no longer on the roster — every month's opening + joiners − leavers equals its closing."
           />
 
           <div className="grid gap-3 lg:grid-cols-2">
@@ -355,7 +426,7 @@ export default function AnalyticsPage() {
                       value: num(Number(row.joiners) - Number(row.leavers)),
                     },
                   ],
-                  href: "/employees",
+                  href: employeesHref(),
                 })
               }
             />
@@ -423,6 +494,7 @@ export default function AnalyticsPage() {
 
         {/* ------------------------------------------------- diversity */}
         <TabsContent value="diversity" className="flex flex-col gap-3">
+          <InsightCallout insight={DIVERSITY_INSIGHT} />
           <div className="grid gap-3 lg:grid-cols-[1fr_1.4fr]">
             <DonutChart
               title="Gender diversity"
@@ -467,14 +539,15 @@ export default function AnalyticsPage() {
 
         {/* ------------------------------------------------------ cost */}
         <TabsContent value="cost" className="flex flex-col gap-3">
+          <InsightCallout insight={COST_INSIGHT} />
           <TrendAreaChart
             title="Payroll cost trend"
-            description="Employee gross and employer statutory cost, month by month."
+            description={`${PAY_RUNS[0].country} payroll — employee gross and employer statutory cost, month by month, from the pay runs. ${scope}.`}
             data={costSeries}
             xKey="month"
             series={[
               { key: "gross", label: "Employee gross" },
-              { key: "employerCost", label: "Employer cost" },
+              { key: "employer", label: "Employer cost" },
             ]}
             stacked
             valueFormat={inrCompact}
@@ -510,7 +583,7 @@ export default function AnalyticsPage() {
             />
             <DonutChart
               title="Cost by branch"
-              description="Monthly payroll cost split across the three staffed locations."
+              description={`Monthly cost to company split across the ${STAFFED_BRANCHES} staffed locations.`}
               data={COST_BY_BRANCH.map((b) => ({ name: b.name, value: b.value }))}
               valueFormat={inrCompact}
               centreValue={inrCompact(COST_BY_BRANCH.reduce((a, b) => a + b.value, 0))}
@@ -522,6 +595,7 @@ export default function AnalyticsPage() {
 
         {/* ---------------------------------------------------- hiring */}
         <TabsContent value="hiring" className="flex flex-col gap-3">
+          <InsightCallout insight={HIRING_INSIGHT} />
           <div className="grid gap-3 lg:grid-cols-2">
             <FunnelChart
               title="Recruitment funnel"
@@ -539,15 +613,15 @@ export default function AnalyticsPage() {
                   href: "/candidates",
                 })
               }
-              footnote="1,284 applications produced 31 hires — a 2.4% end-to-end conversion."
+              footnote={`${num(FUNNEL_IN)} applications produced ${num(FUNNEL_OUT)} hires — a ${pct((FUNNEL_OUT / Math.max(1, FUNNEL_IN)) * 100)} end-to-end conversion.`}
             />
             <DonutChart
               title="Source mix"
-              description="Where hired candidates came from, as a share of hires."
+              description="Where this year's candidates came from."
               data={SOURCE_MIX}
-              valueFormat={(v) => `${v}%`}
-              centreValue="38%"
-              centreLabel="referrals"
+              valueFormat={(v) => `${num(v)} candidates`}
+              centreValue={pct((TOP_SOURCE.value / Math.max(1, SOURCE_TOTAL)) * 100, 0)}
+              centreLabel={TOP_SOURCE.name.toLowerCase()}
               height={250}
             />
           </div>
@@ -565,6 +639,7 @@ export default function AnalyticsPage() {
 
         {/* ----------------------------------------------- time & leave */}
         <TabsContent value="time" className="flex flex-col gap-3">
+          <InsightCallout insight={LEAVE_INSIGHT} />
           <div className="grid gap-3 lg:grid-cols-2">
             <DonutChart
               title="Leave utilisation by type"

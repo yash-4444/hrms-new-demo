@@ -4,6 +4,10 @@ import { inr } from "@/lib/format";
 import { MENU_META, PERSONAS, personaById, type MenuKey, type RoleId } from "@/lib/rbac";
 import { BRANCHES, DEMO_NOW, DEMO_TODAY, TENANT } from "./org";
 import { EMPLOYEES, employeeByCode, employeeName, type Employee } from "./employees";
+import { PAY_RUNS, runById } from "./payroll";
+
+/* The August run as payroll computed it — audit entries quote it, never a typed copy. */
+const AUG_RUN = runById("PR-2026-08") ?? PAY_RUNS[1];
 
 /* ============================================================================
    Admin fixtures — platform users, the audit log and the statutory compliance
@@ -481,7 +485,10 @@ const TEMPLATES: AuditTemplate[] = [
     actorRoles: ["payroll_admin", "tenant_owner"],
     weight: 5,
     build: (rng) => {
-      const net = randInt(rng, 41, 46) * 1000000 + randInt(rng, 0, 999) * 1000;
+      // Two draws kept so the seeded sequence of later audit entries is unchanged.
+      randInt(rng, 41, 46);
+      randInt(rng, 0, 999);
+      const net = AUG_RUN.totals.net;
       return {
         entityType: "Pay Run",
         entityId: "PR-2026-08",
@@ -492,14 +499,14 @@ const TEMPLATES: AuditTemplate[] = [
           Exceptions: 3,
           "Locked by": "—",
           "Net payable": money(net),
-          Headcount: 309,
+          Headcount: AUG_RUN.employeeCount,
         },
         after: {
           Status: "Locked",
           Exceptions: 0,
           "Locked by": "Rahul Desai",
           "Net payable": money(net),
-          Headcount: 309,
+          Headcount: AUG_RUN.employeeCount,
         },
       };
     },
@@ -1281,7 +1288,7 @@ export const COMPLIANCE_FILINGS: ComplianceFiling[] = [
     filingRef: "CIN/HDFC/0281/20260905/00418",
     filedOn: "2026-09-05",
     amount: 9648300,
-    notes: "Section 192 deduction for 309 India employees.",
+    notes: `Section 192 deduction for ${AUG_RUN.employeeCount} India employees.`,
   }),
   F({
     id: "CMP-10",

@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "postbuild": "node scripts/flatten-export-segments.mjs",
     "start": "next start",
     "lint": "eslint"
   },

@@ -14,19 +14,22 @@ import {
   Moon,
   Search,
   Settings,
+  ShieldCheck,
   Sun,
   UserRound,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { fmtAgo } from "@/lib/format";
-import { PERSONAS } from "@/lib/rbac";
-import { segmentLabel } from "@/lib/nav";
+import { PERSONA_GROUPS, personaById, personaHotkey } from "@/lib/rbac";
+import { ALL_NAV_ITEMS, menuKeyForPath, segmentLabel } from "@/lib/nav";
 import { useApp } from "@/components/app-state";
+import { CopilotLauncher } from "@/components/ai";
 import { Button } from "@/components/ui/button";
 import { Avatar, Badge, Hint, Kbd, Separator } from "@/components/ui/primitives";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -54,30 +57,47 @@ function RoleSwitcher() {
           <ChevronRight className="size-3 rotate-90 opacity-50" aria-hidden />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-[320px]">
+      <DropdownMenuContent
+        align="end"
+        className="scrollbar-thin max-h-(--radix-dropdown-menu-content-available-height) w-[320px] overflow-y-auto"
+      >
         <DropdownMenuLabel>View the demo as</DropdownMenuLabel>
-        {PERSONAS.map((p, i) => (
-          <DropdownMenuItem
-            key={p.id}
-            onSelect={() => setRole(p.id)}
-            className="items-start gap-2.5 py-2"
-          >
-            <Avatar name={p.name} size={26} />
-            <span className="min-w-0 flex-1">
-              <span className="flex items-center gap-1.5">
-                <span className="text-xs font-medium text-foreground">{p.name}</span>
-                {role === p.id && <Check className="size-3 text-primary" aria-label="Current" />}
-              </span>
-              <span className="block text-[11px] text-muted-foreground">
-                {p.role} · {p.title}
-              </span>
-              <span className="mt-0.5 block text-[10px] leading-snug text-muted-foreground">{p.description}</span>
-            </span>
-            <Kbd className="mt-0.5 shrink-0">⌥{i + 1}</Kbd>
-          </DropdownMenuItem>
+        {PERSONA_GROUPS.map((g, gi) => (
+          <DropdownMenuGroup key={g.label}>
+            {gi > 0 && <DropdownMenuSeparator />}
+            <p className="px-2 pb-0.5 pt-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              {g.label}
+            </p>
+            {g.roles.map(personaById).map((p) => {
+              const hotkey = personaHotkey(p.id);
+              return (
+                <DropdownMenuItem
+                  key={p.id}
+                  onSelect={() => setRole(p.id)}
+                  title={p.description}
+                  className="gap-2.5 py-1.5"
+                >
+                  <Avatar name={p.name} size={22} />
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-1.5">
+                      <span className="truncate text-xs font-medium text-foreground">{p.name}</span>
+                      {role === p.id && <Check className="size-3 shrink-0 text-primary" aria-label="Current" />}
+                    </span>
+                    <span className="block truncate text-[11px] text-muted-foreground">
+                      {p.role} · {p.title}
+                    </span>
+                  </span>
+                  {hotkey && <Kbd className="shrink-0">⌥{hotkey}</Kbd>}
+                </DropdownMenuItem>
+              );
+            })}
+          </DropdownMenuGroup>
         ))}
         <DropdownMenuSeparator />
-        <p className="px-2 py-1 text-[10px] text-muted-foreground">
+        <p className="px-2 py-1 text-[10px] leading-snug text-muted-foreground">
+          <span className="font-medium text-foreground">{persona.role}:</span> {persona.description}
+        </p>
+        <p className="px-2 pb-1 text-[10px] text-muted-foreground">
           Switching is instant — no reload. Nav, dashboard and permitted actions all change.
         </p>
       </DropdownMenuContent>
@@ -125,7 +145,14 @@ function ThemeToggle() {
 /* -------------------------------------------------------- notifications */
 
 function NotificationBell() {
-  const { notifications, unreadCount, markAllRead, markRead } = useApp();
+  const { notifications, unreadCount, markAllRead, markRead, can } = useApp();
+  const [open, setOpen] = React.useState(false);
+  /* A notification only links where this persona may go. */
+  const reachable = (href?: string) => {
+    if (!href) return false;
+    const key = menuKeyForPath(href);
+    return !key || can(key);
+  };
   const toneDot = {
     info: "bg-info",
     warning: "bg-warning",
@@ -133,7 +160,7 @@ function NotificationBell() {
     danger: "bg-destructive",
   } as const;
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button variant="ghost" size="icon" className="relative" aria-label={`Notifications, ${unreadCount} unread`}>
           <Bell />
@@ -152,32 +179,66 @@ function NotificationBell() {
           </Button>
         </div>
         <ul className="scrollbar-thin max-h-[360px] overflow-y-auto">
-          {notifications.map((n) => (
-            <li key={n.id} className="border-b border-border last:border-0">
-              <Link
-                href={n.href ?? "#"}
-                onClick={() => markRead(n.id)}
-                className={cn(
-                  "flex gap-2.5 px-3 py-2.5 transition-colors hover:bg-muted",
-                  !n.read && "bg-primary-soft/35",
-                )}
-              >
+          {notifications.map((n) => {
+            const body = (
+              <>
                 <span className={cn("mt-1.5 size-1.5 shrink-0 rounded-full", toneDot[n.tone ?? "info"])} aria-hidden />
                 <span className="min-w-0">
                   <span className={cn("block text-xs leading-snug", !n.read && "font-medium")}>{n.title}</span>
                   <span className="mt-0.5 block text-[11px] leading-snug text-muted-foreground">{n.body}</span>
                   <span className="mt-0.5 block text-[10px] text-muted-foreground">{fmtAgo(n.at)}</span>
                 </span>
-              </Link>
-            </li>
-          ))}
+              </>
+            );
+            const cls = cn("flex gap-2.5 px-3 py-2.5 transition-colors", !n.read && "bg-primary-soft/35");
+            return (
+              <li key={n.id} className="border-b border-border last:border-0">
+                {n.href && reachable(n.href) ? (
+                  <Link
+                    href={n.href}
+                    onClick={() => {
+                      markRead(n.id);
+                      setOpen(false);
+                    }}
+                    className={cn(cls, "hover:bg-muted")}
+                  >
+                    {body}
+                  </Link>
+                ) : (
+                  <button type="button" onClick={() => markRead(n.id)} className={cn(cls, "w-full text-left hover:bg-muted")}>
+                    {body}
+                  </button>
+                )}
+              </li>
+            );
+          })}
         </ul>
+        <div className="border-t border-border px-3 py-1.5 text-center">
+          <Button variant="link" size="sm" className="h-auto p-0 text-xs" asChild>
+            <Link href="/notifications" onClick={() => setOpen(false)}>
+              View all notifications
+            </Link>
+          </Button>
+        </div>
       </PopoverContent>
     </Popover>
   );
 }
 
 /* ------------------------------------------------------------ breadcrumbs */
+
+/* Only real pages are links: a nav route, or a record id directly under one
+   (/payroll/runs/PR-2026-09). Grouping segments such as /admin, /payroll or
+   /payroll/runs/<id>/employee have no page of their own and render as text. */
+const NAV_HREFS = new Set(ALL_NAV_ITEMS.map((i) => i.href));
+
+/** A record id: has a digit, dash-separated alphanumerics (PR-2026-09, STL-0001, 42). */
+const isIdSegment = (seg: string) => /\d/.test(seg) && /^[a-z0-9]+(-[a-z0-9]+)*$/i.test(seg);
+
+function isRoutable(segments: string[], i: number) {
+  if (NAV_HREFS.has("/" + segments.slice(0, i + 1).join("/"))) return true;
+  return isIdSegment(segments[i]) && NAV_HREFS.has("/" + segments.slice(0, i).join("/"));
+}
 
 export function Breadcrumbs() {
   const pathname = usePathname();
@@ -195,7 +256,7 @@ export function Breadcrumbs() {
         {segments.map((seg, i) => {
           const href = "/" + segments.slice(0, i + 1).join("/");
           const last = i === segments.length - 1;
-          const isId = /^[a-z]{2,4}-?\d+$/i.test(seg) || /^\d+$/.test(seg);
+          const isId = isIdSegment(seg);
           return (
             <li key={href} className="flex min-w-0 items-center gap-1">
               <ChevronRight className="size-3 shrink-0 text-muted-foreground/60" aria-hidden />
@@ -203,6 +264,8 @@ export function Breadcrumbs() {
                 <span className="truncate font-medium text-foreground" aria-current="page">
                   {isId ? seg.toUpperCase() : segmentLabel(seg)}
                 </span>
+              ) : !isRoutable(segments, i) ? (
+                <span className="truncate text-muted-foreground">{isId ? seg.toUpperCase() : segmentLabel(seg)}</span>
               ) : (
                 <Link href={href} className="truncate text-muted-foreground hover:text-foreground">
                   {isId ? seg.toUpperCase() : segmentLabel(seg)}
@@ -219,7 +282,7 @@ export function Breadcrumbs() {
 /* ---------------------------------------------------------------- topbar */
 
 export function Topbar() {
-  const { setCommandOpen, approvalCount, persona } = useApp();
+  const { setCommandOpen, approvalCount, persona, can } = useApp();
 
   return (
     <header className="sticky top-0 z-30 flex h-12 shrink-0 items-center gap-1.5 border-b border-border bg-card px-2 lg:px-3">
@@ -237,18 +300,22 @@ export function Topbar() {
       </button>
 
       <div className="ml-auto flex items-center gap-0.5">
-        <Hint text={`Approvals inbox — ${approvalCount} item${approvalCount === 1 ? "" : "s"} waiting on you`}>
-          <Button variant="ghost" size="icon" className="relative" asChild>
-            <Link href="/leave/approvals" aria-label={`Approvals inbox, ${approvalCount} pending`}>
-              <Inbox />
-              {approvalCount > 0 && (
-                <span className="tnum absolute -right-0.5 -top-0.5 flex min-w-[15px] items-center justify-center rounded-full bg-warning px-1 text-[9px] font-bold leading-[15px] text-[#3a2800]">
-                  {approvalCount}
-                </span>
-              )}
-            </Link>
-          </Button>
-        </Hint>
+        <CopilotLauncher className="mr-1 h-8" />
+
+        {can("team.approvals") && (
+          <Hint text={`Approvals inbox — ${approvalCount} item${approvalCount === 1 ? "" : "s"} waiting on you`}>
+            <Button variant="ghost" size="icon" className="relative" asChild>
+              <Link href="/approvals" aria-label={`Approvals inbox, ${approvalCount} pending`}>
+                <Inbox />
+                {approvalCount > 0 && (
+                  <span className="tnum absolute -right-0.5 -top-0.5 flex min-w-[15px] items-center justify-center rounded-full bg-warning px-1 text-[9px] font-bold leading-[15px] text-[#3a2800]">
+                    {approvalCount}
+                  </span>
+                )}
+              </Link>
+            </Button>
+          </Hint>
+        )}
 
         <NotificationBell />
         <ThemeToggle />
@@ -273,12 +340,17 @@ export function Topbar() {
             </div>
             <DropdownMenuSeparator />
             <DropdownMenuItem asChild>
-              <Link href={`/employees/${persona.employeeId}`}>
+              <Link href="/me">
                 <UserRound /> My profile
               </Link>
             </DropdownMenuItem>
             <DropdownMenuItem asChild>
-              <Link href="/admin/settings">
+              <Link href="/me/security">
+                <ShieldCheck /> Security &amp; sessions
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuItem asChild>
+              <Link href="/me/preferences">
                 <Settings /> Preferences
               </Link>
             </DropdownMenuItem>
