@@ -2,13 +2,14 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
 import {
   Bell,
   Check,
   ChevronRight,
   Inbox,
+  LayoutDashboard,
   LogOut,
   Monitor,
   Moon,
@@ -20,7 +21,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { fmtAgo } from "@/lib/format";
-import { PERSONA_GROUPS, personaById, personaHotkey } from "@/lib/rbac";
+import { PERSONA_GROUPS, isPlatformRole, personaById, personaHotkey, type RoleId } from "@/lib/rbac";
 import { ALL_NAV_ITEMS, menuKeyForPath, segmentLabel } from "@/lib/nav";
 import { useApp } from "@/components/app-state";
 import { CopilotLauncher } from "@/components/ai";
@@ -44,7 +45,15 @@ import { CommandPalette } from "./command-palette";
 /* ------------------------------------------------------------ role switch */
 
 function RoleSwitcher() {
-  const { role, persona, setRole } = useApp();
+  const { role, persona: viewed, setRole, supportSession } = useApp();
+  const router = useRouter();
+  /* In a support session the screens are the owner's, but the person is the operator. */
+  const persona = supportSession ? personaById(role) : viewed;
+  const choose = (id: RoleId) => {
+    setRole(id);
+    /* The vendor persona has no tenant home — it lands in the Platform Console. */
+    if (isPlatformRole(id)) router.push("/console");
+  };
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -61,6 +70,16 @@ function RoleSwitcher() {
         align="end"
         className="scrollbar-thin max-h-(--radix-dropdown-menu-content-available-height) w-[320px] overflow-y-auto"
       >
+        {isPlatformRole(role) && (
+          <>
+            <DropdownMenuItem asChild className="gap-2.5 py-1.5">
+              <Link href="/console">
+                <LayoutDashboard /> Back to the Platform Console
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+          </>
+        )}
         <DropdownMenuLabel>View the demo as</DropdownMenuLabel>
         {PERSONA_GROUPS.map((g, gi) => (
           <DropdownMenuGroup key={g.label}>
@@ -73,7 +92,7 @@ function RoleSwitcher() {
               return (
                 <DropdownMenuItem
                   key={p.id}
-                  onSelect={() => setRole(p.id)}
+                  onSelect={() => choose(p.id)}
                   title={p.description}
                   className="gap-2.5 py-1.5"
                 >
@@ -107,7 +126,7 @@ function RoleSwitcher() {
 
 /* --------------------------------------------------------------- theme */
 
-function ThemeToggle() {
+export function ThemeToggle() {
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = React.useState(false);
   React.useEffect(() => setMounted(true), []);

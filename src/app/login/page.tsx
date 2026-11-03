@@ -3,9 +3,9 @@
 import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { BookOpen, KeyRound, Lock, Mail, MessageSquareText, ScanText, ShieldCheck, TrendingDown } from "lucide-react";
+import { ArrowRight, BookOpen, KeyRound, Lock, Mail, MessageSquareText, ScanText, ShieldCheck, TrendingDown } from "lucide-react";
 import { toast } from "sonner";
-import { PERSONAS, PERSONA_GROUPS, personaById, type RoleId } from "@/lib/rbac";
+import { ALL_PERSONAS, PERSONA_GROUPS, isPlatformRole, personaById, type RoleId } from "@/lib/rbac";
 import { BRANCHES, DEPARTMENTS, TENANT } from "@/mock/org";
 import { EMPLOYEES } from "@/mock/employees";
 import { useApp } from "@/components/app-state";
@@ -44,10 +44,11 @@ export default function LoginPage() {
      the persona shortcuts below skip straight to the dashboard mid-demo. */
   const signIn = (roleId?: RoleId) => {
     setBusy(true);
-    const match = roleId ?? PERSONAS.find((p) => p.email === email.trim().toLowerCase())?.id ?? "hr_admin";
+    const match = roleId ?? ALL_PERSONAS.find((p) => p.email === email.trim().toLowerCase())?.id ?? "hr_admin";
     setTimeout(() => {
       setRole(match);
-      router.push(roleId ? "/dashboard" : "/mfa");
+      /* The vendor operator has no tenant home: the persona shortcut lands in the console. */
+      router.push(!roleId ? "/mfa" : isPlatformRole(roleId) ? "/console" : "/dashboard");
     }, 450);
   };
 
@@ -183,6 +184,13 @@ export default function LoginPage() {
             </Button>
           </form>
 
+          <p className="mt-4 text-center text-xs text-muted-foreground">
+            New to HRMS-NEW?{" "}
+            <Link href="/register" className="inline-flex items-center gap-0.5 font-medium text-primary hover:underline">
+              Register your company <ArrowRight className="size-3" aria-hidden />
+            </Link>
+          </p>
+
           <Card className="mt-5 p-3">
             <p className="flex items-center gap-1.5 text-xs font-semibold">
               <KeyRound className="size-3.5 text-muted-foreground" aria-hidden />
@@ -191,27 +199,37 @@ export default function LoginPage() {
             <p className="mt-0.5 text-[11px] text-muted-foreground">
               Pick one to jump straight in. You can switch at any time from the top bar.
             </p>
-            <ul className="mt-2 grid grid-cols-1 gap-0.5 sm:grid-cols-2">
-              {PERSONA_GROUPS.flatMap((g) => g.roles).map(personaById).map((p) => (
-                <li key={p.id}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEmail(p.email);
-                      signIn(p.id);
-                    }}
-                    title={p.description}
-                    className="flex w-full items-center gap-2 rounded-md px-1.5 py-1.5 text-left transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
-                  >
-                    <Avatar name={p.name} size={22} />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-xs font-medium">{p.name}</span>
-                      <span className="block truncate text-[10px] text-muted-foreground">{p.role}</span>
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
+            {/* Tenant staff first; the vendor's operator sits apart — it signs in outside every tenant. */}
+            {[PERSONA_GROUPS.filter((g) => !g.roles.some(isPlatformRole)), PERSONA_GROUPS.filter((g) => g.roles.some(isPlatformRole))].map((groups, gi) => (
+              <React.Fragment key={gi}>
+                {gi > 0 && (
+                  <p className="mt-2 border-t border-border px-1.5 pt-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    {groups.map((g) => g.label).join(" · ")}
+                  </p>
+                )}
+                <ul className="mt-2 grid grid-cols-1 gap-0.5 sm:grid-cols-2">
+                  {groups.flatMap((g) => g.roles).map(personaById).map((p) => (
+                    <li key={p.id}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEmail(p.email);
+                          signIn(p.id);
+                        }}
+                        title={p.description}
+                        className="flex w-full items-center gap-2 rounded-md px-1.5 py-1.5 text-left transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <Avatar name={p.name} size={22} />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-xs font-medium">{p.name}</span>
+                          <span className="block truncate text-[10px] text-muted-foreground">{p.role}</span>
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </React.Fragment>
+            ))}
           </Card>
         </div>
       </div>

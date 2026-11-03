@@ -181,7 +181,8 @@ export const INTENT_CATALOG: IntentInfo[] = [
   { id: "onboarding", label: "New-joiner onboarding status", example: "Onboarding status of new joiners", module: "Onboarding", available: (c) => c.can("lifecycle.onboarding", "V") },
 ];
 
-const SUGGESTED: Record<RoleId, string[]> = {
+/* Partial: the platform operator has no tenant copilot of its own. */
+const SUGGESTED: Partial<Record<RoleId, string[]>> = {
   employee: ["What's my leave balance?", "Apply casual leave next Friday", "Why is my net pay lower this month?", "When is the next holiday?", "Regularise my missed punch", "Where is my expense claim stuck?", "How many WFH days am I allowed?", "Which assets are assigned to me?"],
   manager: ["Summarise my pending approvals", "Approve all low-risk requests", "Who in my team is on leave today?", "Who in my team is at risk of leaving?", "Apply earned leave from 12 Oct to 14 Oct", "What is the notice period after confirmation?"],
   hr_admin: ["What's our headcount and attrition?", "Onboarding status of new joiners", "Who is at risk of leaving?", "What is the notice period after confirmation?", "Draft a welcome email", "Summarise my pending approvals"],
@@ -197,7 +198,7 @@ const SUGGESTED: Record<RoleId, string[]> = {
 
 /** Starter prompts for the persona — shown on an empty conversation. */
 export function suggestedPrompts(role: RoleId): string[] {
-  return SUGGESTED[role] ?? SUGGESTED.employee;
+  return SUGGESTED[role] ?? SUGGESTED.employee!;
 }
 
 /* --------------------------------------------------------------- scope */

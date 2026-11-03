@@ -3,6 +3,7 @@ import { Inter } from "next/font/google";
 import { ThemeProvider } from "next-themes";
 import { Toaster } from "sonner";
 import { AppStateProvider } from "@/components/app-state";
+import { ConsoleStateProvider } from "@/components/console/console-state";
 import { TooltipProvider } from "@/components/ui/primitives";
 import "./globals.css";
 
@@ -43,21 +44,24 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <ThemeProvider attribute="class" defaultTheme="light" enableSystem disableTransitionOnChange>
           <AppStateProvider>
-            <TooltipProvider delayDuration={250} skipDelayDuration={300}>
-              {children}
-              <Toaster
-                position="bottom-right"
-                closeButton
-                toastOptions={{
-                  classNames: {
-                    toast:
-                      "!bg-popover !text-popover-foreground !border-border !rounded-md !text-xs !shadow-lg",
-                    description: "!text-muted-foreground !text-xs",
-                    actionButton: "!bg-primary !text-primary-foreground !text-xs",
-                  },
-                }}
-              />
-            </TooltipProvider>
+            {/* Root-level so console edits survive a support session's trip into a tenant. */}
+            <ConsoleStateProvider>
+              <TooltipProvider delayDuration={250} skipDelayDuration={300}>
+                {children}
+                <Toaster
+                  position="bottom-right"
+                  closeButton
+                  toastOptions={{
+                    classNames: {
+                      toast:
+                        "!bg-popover !text-popover-foreground !border-border !rounded-md !text-xs !shadow-lg",
+                      description: "!text-muted-foreground !text-xs",
+                      actionButton: "!bg-primary !text-primary-foreground !text-xs",
+                    },
+                  }}
+                />
+              </TooltipProvider>
+            </ConsoleStateProvider>
           </AppStateProvider>
         </ThemeProvider>
       </body>

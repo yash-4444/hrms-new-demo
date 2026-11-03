@@ -3,6 +3,7 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import { KeyRound, ShieldCheck, Smartphone } from "lucide-react";
+import { isPlatformRole } from "@/lib/rbac";
 import { mockAction, useApp } from "@/components/app-state";
 import { Button } from "@/components/ui/button";
 import { Field, Input } from "@/components/ui/primitives";
@@ -11,7 +12,7 @@ import { OtpInput } from "@/components/self-service/otp-input";
 
 export default function MfaPage() {
   const router = useRouter();
-  const { persona } = useApp();
+  const { persona, role } = useApp();
   const [mode, setMode] = React.useState<"totp" | "recovery">("totp");
   const [code, setCode] = React.useState("");
   const [recovery, setRecovery] = React.useState("");
@@ -34,7 +35,7 @@ export default function MfaPage() {
       mockAction(`Welcome back, ${persona.name.split(" ")[0]}`, {
         description: mode === "recovery" ? "That recovery code is now used up — 8 remain." : trust ? "This device is trusted for 30 days." : undefined,
       });
-      router.push("/dashboard");
+      router.push(isPlatformRole(role) ? "/console" : "/dashboard");
     }, 450);
   };
 

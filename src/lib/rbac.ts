@@ -16,7 +16,9 @@ export type RoleId =
   | "department_head"
   | "helpdesk_agent"
   | "it_admin"
-  | "auditor";
+  | "auditor"
+  /* The SaaS vendor's operator — outside every tenant (see PLATFORM_PERSONA). */
+  | "platform_admin";
 
 export type Action = "V" | "C" | "E" | "D" | "X" | "A";
 export const ACTIONS: Action[] = ["V", "C", "E", "D", "X", "A"];
@@ -191,7 +193,32 @@ export const PERSONAS: Persona[] = [
   },
 ];
 
-export const personaById = (id: RoleId) => PERSONAS.find((p) => p.id === id)!;
+/* The vendor's operator. Deliberately NOT in PERSONAS: that list is the
+   tenant's own staff (the role matrix, user lists and fixtures derive from
+   it), and a platform operator is never a member of any tenant. They work in
+   the Platform Console (/console) and enter a tenant only through a recorded,
+   time-boxed, read-only support session. */
+export const PLATFORM_PERSONA: Persona = {
+  id: "platform_admin",
+  name: "Devika Nair",
+  shortName: "Devika",
+  title: "Platform Operations Lead",
+  role: "Platform Super Admin",
+  employeeId: "OPS-001",
+  branch: "HRMS-NEW HQ",
+  department: "Platform Operations",
+  email: "devika.nair@hrms-new.app",
+  reportees: 4,
+  description: "The SaaS vendor's console: every tenant, plan, invoice and platform health. Sees tenant data only inside a recorded support session.",
+};
+
+/** Every persona the demo can sign in as — tenant staff plus the vendor operator. */
+export const ALL_PERSONAS: Persona[] = [...PERSONAS, PLATFORM_PERSONA];
+
+export const personaById = (id: RoleId) => ALL_PERSONAS.find((p) => p.id === id)!;
+
+/** True for the vendor-side role that lives in /console, outside any tenant. */
+export const isPlatformRole = (id: RoleId) => id === "platform_admin";
 
 /** How the role switcher and the login page group the personas. */
 export const PERSONA_GROUPS: { label: string; roles: RoleId[] }[] = [
@@ -199,6 +226,7 @@ export const PERSONA_GROUPS: { label: string; roles: RoleId[] }[] = [
   { label: "HR & admin", roles: ["hr_admin", "recruiter", "helpdesk_agent", "tenant_owner"] },
   { label: "Finance", roles: ["payroll_admin", "finance_controller"] },
   { label: "Specialists", roles: ["it_admin", "auditor"] },
+  { label: "Platform (vendor)", roles: ["platform_admin"] },
 ];
 
 /** The Alt+digit that jumps to a persona — "1"…"9", "0" — or null past the tenth. */
@@ -881,6 +909,9 @@ export const RBAC: Record<RoleId, Grants> = {
   helpdesk_agent: HELPDESK_AGENT,
   it_admin: IT_ADMIN,
   auditor: AUDITOR,
+  /* No tenant grants at all: the operator sees a tenant only through a
+     support session, which borrows the owner's view read-only. */
+  platform_admin: {},
 };
 
 export function grantsFor(role: RoleId, key: MenuKey): Action[] {

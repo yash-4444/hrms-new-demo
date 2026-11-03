@@ -4,10 +4,14 @@ import * as React from "react";
 import { usePathname } from "next/navigation";
 import { toast } from "sonner";
 import {
+  ALL_PERSONAS,
+  MENU_META,
   PERSONAS,
+  actionLabel,
   can,
   denyReason,
   grantsFor,
+  isPlatformRole,
   personaById,
   type Action,
   type MenuKey,
@@ -72,10 +76,34 @@ export interface AppNotification {
   tone?: "info" | "warning" | "success" | "danger";
 }
 
+/**
+ * A platform operator's time-boxed, read-only window into one tenant, opened
+ * from the Platform Console with a reason and a ticket. While it runs the
+ * tenant app renders through the tenant owner's grants, View only.
+ */
+export interface SupportSession {
+  tenantId: string;
+  tenantName: string;
+  ticket: string;
+  reason: string;
+  minutes: number;
+  /** Demo-clock epoch ms at which the session closes itself. */
+  endsAt: number;
+}
+
+/** The tenant role a support session borrows its (read-only) view from. */
+const SUPPORT_LENS: RoleId = "tenant_owner";
+
 interface AppState {
+  /** The signed-in persona. */
   role: RoleId;
+  /** Whose screens are rendered — `role`, or the owner's during a support session. */
   persona: Persona;
   setRole: (r: RoleId) => void;
+
+  supportSession: SupportSession | null;
+  startSupportSession: (s: Omit<SupportSession, "endsAt">) => void;
+  endSupportSession: (opts?: { expired?: boolean }) => void;
 
   can: (key: MenuKey, action?: Action) => boolean;
   grants: (key: MenuKey) => Action[];
@@ -179,13 +207,38 @@ function inboxCount(r: RoleId, decided: ReadonlySet<string>) {
 }
 
 const PERSONA_KEY = "hrms.persona";
+const SUPPORT_KEY = "hrms.support";
 
 function readStoredRole(): RoleId | null {
   try {
     const v = window.sessionStorage.getItem(PERSONA_KEY);
-    return v && PERSONAS.some((p) => p.id === v) ? (v as RoleId) : null;
+    return v && ALL_PERSONAS.some((p) => p.id === v) ? (v as RoleId) : null;
   } catch {
     return null;
+  }
+}
+
+/* The demo clock restarts at DEMO_NOW on every page load, so a stored session
+   keeps its deadline on the wall clock and is re-based onto the demo clock
+   when read back — a reload never lengthens or shortens it. */
+function readStoredSupport(): SupportSession | null {
+  try {
+    const v = window.sessionStorage.getItem(SUPPORT_KEY);
+    const s = v ? (JSON.parse(v) as SupportSession & { wallEndsAt?: number }) : null;
+    if (!s || typeof s.wallEndsAt !== "number" || s.wallEndsAt <= Date.now()) return null;
+    const { wallEndsAt, ...session } = s;
+    return { ...session, endsAt: demoNowMs() + (wallEndsAt - Date.now()) };
+  } catch {
+    return null;
+  }
+}
+
+function storeSupport(s: SupportSession | null) {
+  try {
+    if (s) window.sessionStorage.setItem(SUPPORT_KEY, JSON.stringify({ ...s, wallEndsAt: Date.now() + (s.endsAt - demoNowMs()) }));
+    else window.sessionStorage.removeItem(SUPPORT_KEY);
+  } catch {
+    /* storage blocked — the session simply ends on reload */
   }
 }
 
@@ -199,9 +252,13 @@ function storeRole(r: RoleId) {
 
 export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const [role, setRoleState] = React.useState<RoleId>("hr_admin");
+  const [supportSession, setSupportSession] = React.useState<SupportSession | null>(null);
+  /* Only the operator can hold a session; everything downstream reads this. */
+  const session = isPlatformRole(role) ? supportSession : null;
+  const viewRole: RoleId = session ? SUPPORT_LENS : role;
   const [notifications, setNotifications] = React.useState(SEED_NOTIFICATIONS);
   const [decidedApprovals, setDecidedApprovals] = React.useState<ReadonlySet<string>>(() => new Set());
-  const approvalCount = React.useMemo(() => inboxCount(role, decidedApprovals), [role, decidedApprovals]);
+  const approvalCount = React.useMemo(() => inboxCount(viewRole, decidedApprovals), [viewRole, decidedApprovals]);
   const markDecided = React.useCallback((ids: string[], decided = true) => {
     setDecidedApprovals((s) => {
       const next = new Set(s);
@@ -223,6 +280,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     const stored = readStoredRole();
     if (stored && stored !== "hr_admin") {
       setRoleState(stored);
+      if (isPlatformRole(stored)) setSupportSession(readStoredSupport());
     }
     document.documentElement.removeAttribute("data-persona-restoring");
   }, []);
@@ -230,6 +288,9 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const setRole = React.useCallback((r: RoleId) => {
     setRoleState(r);
     storeRole(r);
+    /* Switching persona always closes a support session. */
+    setSupportSession(null);
+    storeSupport(null);
     const p = personaById(r);
     toast.success(`Now viewing as ${p.name}`, {
       description: `${p.role} · ${p.branch}. Navigation and available actions have changed.`,
@@ -261,14 +322,47 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     setCommandOpen(false);
   }, [pathname]);
 
+  const startSupportSession = React.useCallback((s: Omit<SupportSession, "endsAt">) => {
+    const next = { ...s, endsAt: demoNowMs() + s.minutes * 60_000 };
+    setSupportSession(next);
+    storeSupport(next);
+  }, []);
+
+  const endSupportSession = React.useCallback(
+    (opts?: { expired?: boolean }) => {
+      if (session) {
+        toast.info(`Support session in ${session.tenantName} ${opts?.expired ? "expired" : "ended"}`, {
+          description: `Ticket ${session.ticket}. The close is recorded in the tenant's own audit trail.`,
+        });
+      }
+      setSupportSession(null);
+      storeSupport(null);
+    },
+    [session],
+  );
+
+  /* A support session closes itself on the demo clock, wherever the operator is. */
+  React.useEffect(() => {
+    if (!session) return;
+    const t = setTimeout(() => endSupportSession({ expired: true }), Math.max(0, session.endsAt - demoNowMs()));
+    return () => clearTimeout(t);
+  }, [session, endSupportSession]);
+
   const value = React.useMemo<AppState>(
     () => ({
       role,
-      persona: personaById(role),
+      persona: personaById(viewRole),
       setRole,
-      can: (key, action = "V") => can(role, key, action),
-      grants: (key) => grantsFor(role, key),
-      why: (key, action = "V") => denyReason(role, key, action),
+      supportSession: session,
+      startSupportSession,
+      endSupportSession,
+      /* In a support session: the owner's View grants, nothing else. */
+      can: (key, action = "V") => (session ? action === "V" && can(viewRole, key, "V") : can(role, key, action)),
+      grants: (key) => (session ? grantsFor(viewRole, key).filter((a) => a === "V") : grantsFor(role, key)),
+      why: (key, action = "V") =>
+        session && can(viewRole, key, "V")
+          ? `Support sessions are read-only — ${MENU_META.find((m) => m.key === key)?.label ?? key} · ${actionLabel(key, action)} is blocked inside ${session.tenantName}.`
+          : denyReason(viewRole, key, action),
       notifications,
       unreadCount: notifications.filter((n) => !n.read).length,
       markAllRead: () => setNotifications((ns) => ns.map((n) => ({ ...n, read: true }))),
@@ -295,7 +389,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       sidebarCollapsed,
       toggleSidebar: () => setSidebarCollapsed((v) => !v),
     }),
-    [role, setRole, notifications, approvalCount, decidedApprovals, markDecided, exceptionCount, punchedIn, punchedInAt, commandOpen, sidebarCollapsed],
+    [role, viewRole, session, setRole, startSupportSession, endSupportSession, notifications, approvalCount, decidedApprovals, markDecided, exceptionCount, punchedIn, punchedInAt, commandOpen, sidebarCollapsed],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

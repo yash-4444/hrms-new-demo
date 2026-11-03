@@ -5,88 +5,81 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { z } from "zod";
-import { ArrowLeft, ArrowRight, Building2, Check, Globe2, Rocket, UserRound, WalletCards } from "lucide-react";
+import { ArrowLeft, ArrowRight, Building2, Check, Globe2, Send, UserRound, WalletCards } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { PLANS } from "@/mock/self-service";
-import { mockAction, useApp } from "@/components/app-state";
+import { SIGNUP_REQUESTS, type CompanySize } from "@/mock/console-signups";
+import { computeSignupChecks, subdomainAvailability } from "@/mock/signup-checks";
+import { useConsole } from "@/components/console/console-state";
+import { submitSignup, useSignupStore } from "@/components/console/signup-store";
 import { Button } from "@/components/ui/button";
-import { Badge, Field, Input } from "@/components/ui/primitives";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/overlays";
 import { AuthShell } from "@/components/self-service/auth-shell";
-import { PasswordInput, PasswordStrength, passwordField } from "@/components/self-service/password";
+import { REGISTER_DEFAULTS, registerSchema, type RegisterValues } from "@/components/self-service/register-schema";
+import { AdminStep, CompanyStep, DefaultsStep, type SubdomainCheck } from "@/components/self-service/register-steps";
+import { PlanStep } from "@/components/self-service/register-plan";
 
-const COUNTRIES = [
-  { value: "IN", label: "India", tz: "Asia/Kolkata", fy: "4", currency: "INR" },
-  { value: "US", label: "United States", tz: "America/New_York", fy: "1", currency: "USD" },
-  { value: "AE", label: "United Arab Emirates", tz: "Asia/Dubai", fy: "1", currency: "AED" },
-  { value: "SG", label: "Singapore", tz: "Asia/Singapore", fy: "4", currency: "SGD" },
-];
-const TIMEZONES = ["Asia/Kolkata", "America/New_York", "Asia/Dubai", "Asia/Singapore", "Europe/London"];
-const SIZES = ["1–25", "26–100", "101–500", "501–2,000", "2,000+"];
+/* Self-serve sign-up. Submitting files a pending request with the platform —
+   it lands in /console/signups for an operator — and opens the applicant's
+   live status page. Nothing is provisioned here. */
 
-const schema = z.object({
-  company: z.string().trim().min(2, "Enter your company's name"),
-  subdomain: z
-    .string()
-    .trim()
-    .min(3, "At least 3 characters")
-    .regex(/^[a-z0-9-]+$/, "Lower-case letters, numbers and hyphens only"),
-  size: z.string().min(1, "Choose a company size"),
-  adminName: z.string().trim().min(2, "Enter your full name"),
-  adminEmail: z.string().trim().email("Enter a valid work email"),
-  password: passwordField,
-  country: z.string().min(1, "Choose a country"),
-  fyStart: z.enum(["1", "4"]),
-  timezone: z.string().min(1, "Choose a time zone"),
-  plan: z.enum(["free", "pro", "enterprise"]),
-});
-type Values = z.infer<typeof schema>;
-
-const STEPS: { id: string; label: string; icon: React.ElementType; fields: (keyof Values)[] }[] = [
+const STEPS: { id: string; label: string; icon: React.ElementType; fields: (keyof RegisterValues)[] }[] = [
   { id: "company", label: "Company", icon: Building2, fields: ["company", "subdomain", "size"] },
   { id: "admin", label: "Admin", icon: UserRound, fields: ["adminName", "adminEmail", "password"] },
   { id: "defaults", label: "Defaults", icon: Globe2, fields: ["country", "fyStart", "timezone"] },
-  { id: "plan", label: "Plan", icon: WalletCards, fields: ["plan"] },
+  { id: "plan", label: "Plan", icon: WalletCards, fields: ["plan", "terms"] },
 ];
 
 export default function RegisterPage() {
   const router = useRouter();
-  const { setRole } = useApp();
+  const { tenants } = useConsole();
+  const store = useSignupStore();
   const [step, setStep] = React.useState(0);
   const [busy, setBusy] = React.useState(false);
-  const form = useForm<Values>({
-    resolver: zodResolver(schema),
-    mode: "onTouched",
-    defaultValues: {
-      company: "",
-      subdomain: "",
-      size: "",
-      adminName: "",
-      adminEmail: "",
-      password: "",
-      country: "IN",
-      fyStart: "4",
-      timezone: "Asia/Kolkata",
-      plan: "pro",
-    },
-  });
-  const v = form.watch();
-  const errors = form.formState.errors;
+  const form = useForm<RegisterValues>({ resolver: zodResolver(registerSchema), mode: "onTouched", defaultValues: REGISTER_DEFAULTS });
+  const subdomain = form.watch("subdomain");
+
+  /* Live tenants, plus every request still holding a name — fixtures and this browser's own. */
+  const holders = React.useMemo(() => [...store.requests, ...SIGNUP_REQUESTS], [store.requests]);
+  const check = React.useMemo<SubdomainCheck>(() => {
+    if (!registerSchema.shape.subdomain.safeParse(subdomain).success) return null;
+    const res = subdomainAvailability(subdomain, tenants, holders);
+    if (res.available) return res;
+    const suggestion = ["hr", "team", "2", "3"].map((s) => `${subdomain}-${s}`).find((s) => subdomainAvailability(s, tenants, holders).available);
+    return { ...res, suggestion };
+  }, [subdomain, tenants, holders]);
+
+  /* A taken name blocks the Company step rather than failing at the very end. */
+  const claimSubdomain = () => {
+    if (check?.available !== false) return true;
+    form.setError("subdomain", { message: `${subdomain}.hrms-new.app ${check.reason} — choose another address` }, { shouldFocus: true });
+    return false;
+  };
 
   const next = async () => {
     const ok = await form.trigger(STEPS[step].fields);
-    if (ok) setStep((s) => Math.min(STEPS.length - 1, s + 1));
+    if (ok && (step !== 0 || claimSubdomain())) setStep((s) => Math.min(STEPS.length - 1, s + 1));
   };
 
   const submit = form.handleSubmit((values) => {
+    if (!claimSubdomain()) {
+      setStep(0);
+      return;
+    }
     setBusy(true);
     setTimeout(() => {
-      setRole("tenant_owner");
-      mockAction(`${values.company} is ready`, {
-        description: `${PLANS.find((p) => p.id === values.plan)?.name} plan · ${values.subdomain}.hrms-new.app · FY starts ${values.fyStart === "4" ? "April" : "January"}.`,
+      /* Only the request's fields are passed on — the password stays in this form and dies with it. */
+      const request = submitSignup({
+        company: values.company,
+        subdomain: values.subdomain,
+        industry: "Not stated",
+        plan: values.plan,
+        country: values.country,
+        size: values.size as CompanySize,
+        adminName: values.adminName,
+        adminEmail: values.adminEmail.toLowerCase(),
+        checks: computeSignupChecks({ company: values.company, adminEmail: values.adminEmail }, tenants),
       });
-      router.push("/dashboard");
+      form.resetField("password");
+      router.push(`/register/submitted?ref=${request.id}`);
     }, 600);
   });
 
@@ -119,157 +112,10 @@ export default function RegisterPage() {
           else void submit();
         }}
       >
-        {step === 0 && (
-          <>
-            <Field label="Company name" htmlFor="rg-company" required error={errors.company?.message}>
-              <Input
-                id="rg-company"
-                autoFocus
-                aria-invalid={!!errors.company}
-                {...form.register("company", {
-                  onChange: (e) => {
-                    if (!form.getFieldState("subdomain").isDirty)
-                      form.setValue("subdomain", String(e.target.value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 30));
-                  },
-                })}
-              />
-            </Field>
-            <Field label="Workspace address" htmlFor="rg-sub" required error={errors.subdomain?.message}>
-              <div className="flex items-center">
-                <Input id="rg-sub" className="rounded-r-none" aria-invalid={!!errors.subdomain} {...form.register("subdomain")} />
-                <span className="flex h-8 items-center rounded-r-md border border-l-0 border-input bg-muted px-2 text-xs text-muted-foreground">
-                  .hrms-new.app
-                </span>
-              </div>
-            </Field>
-            <Field label="Company size" required error={errors.size?.message}>
-              <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-5" role="radiogroup" aria-label="Company size">
-                {SIZES.map((s) => (
-                  <button
-                    key={s}
-                    type="button"
-                    role="radio"
-                    aria-checked={v.size === s}
-                    onClick={() => form.setValue("size", s, { shouldValidate: true, shouldDirty: true })}
-                    className={cn(
-                      "rounded-md border px-2 py-1.5 text-xs focus-visible:ring-2 focus-visible:ring-ring",
-                      v.size === s ? "border-primary bg-primary-soft text-primary-soft-foreground" : "border-border hover:bg-muted",
-                    )}
-                  >
-                    {s}
-                  </button>
-                ))}
-              </div>
-            </Field>
-          </>
-        )}
-
-        {step === 1 && (
-          <>
-            <Field label="Your full name" htmlFor="rg-name" required error={errors.adminName?.message}>
-              <Input id="rg-name" autoComplete="name" autoFocus aria-invalid={!!errors.adminName} {...form.register("adminName")} />
-            </Field>
-            <Field label="Work email" htmlFor="rg-email" required error={errors.adminEmail?.message} hint="You become the tenant owner. We send a verification link here.">
-              <Input id="rg-email" type="email" autoComplete="email" aria-invalid={!!errors.adminEmail} {...form.register("adminEmail")} />
-            </Field>
-            <Field label="Password" htmlFor="rg-pw" required error={errors.password?.message}>
-              <PasswordInput id="rg-pw" autoComplete="new-password" aria-invalid={!!errors.password} {...form.register("password")} />
-            </Field>
-            <PasswordStrength value={v.password} />
-          </>
-        )}
-
-        {step === 2 && (
-          <>
-            <Field label="Primary country" required error={errors.country?.message} hint="Sets statutory rules, holidays and currency.">
-              <Select
-                value={v.country}
-                onValueChange={(c) => {
-                  const meta = COUNTRIES.find((x) => x.value === c);
-                  form.setValue("country", c, { shouldDirty: true, shouldValidate: true });
-                  if (meta) {
-                    form.setValue("timezone", meta.tz, { shouldDirty: true });
-                    form.setValue("fyStart", meta.fy as "1" | "4", { shouldDirty: true });
-                  }
-                }}
-              >
-                <SelectTrigger aria-label="Primary country">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {COUNTRIES.map((c) => (
-                    <SelectItem key={c.value} value={c.value}>
-                      {c.label} · {c.currency}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Financial year starts" required>
-                <Select value={v.fyStart} onValueChange={(x) => form.setValue("fyStart", x as "1" | "4", { shouldDirty: true })}>
-                  <SelectTrigger aria-label="Financial year start">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="4">April (Apr–Mar)</SelectItem>
-                    <SelectItem value="1">January (Jan–Dec)</SelectItem>
-                  </SelectContent>
-                </Select>
-              </Field>
-              <Field label="Time zone" required error={errors.timezone?.message}>
-                <Select value={v.timezone} onValueChange={(x) => form.setValue("timezone", x, { shouldDirty: true, shouldValidate: true })}>
-                  <SelectTrigger aria-label="Time zone">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {TIMEZONES.map((t) => (
-                      <SelectItem key={t} value={t}>
-                        {t}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
-            </div>
-            <p className="rounded-md border border-border bg-subtle p-2.5 text-[11px] text-muted-foreground">
-              We&apos;ll pre-load the {COUNTRIES.find((c) => c.value === v.country)?.label} holiday calendar, a standard leave policy, a
-              9-hour general shift and {v.country === "IN" ? "PF, ESI, PT and TDS rules for FY 2026-27" : "a default payroll calendar"}.
-            </p>
-          </>
-        )}
-
-        {step === 3 && (
-          <div className="grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label="Plan">
-            {PLANS.map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                role="radio"
-                aria-checked={v.plan === p.id}
-                onClick={() => form.setValue("plan", p.id, { shouldDirty: true })}
-                className={cn(
-                  "flex flex-col rounded-md border p-3 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring",
-                  v.plan === p.id ? "border-primary bg-primary-soft/40 ring-2 ring-primary/20" : "border-border hover:bg-muted",
-                )}
-              >
-                <span className="flex items-center justify-between">
-                  <span className="text-sm font-semibold">{p.name}</span>
-                  {p.id === "pro" && <Badge variant="soft">Popular</Badge>}
-                </span>
-                <span className="tnum mt-1 text-lg font-semibold">{p.price}</span>
-                <span className="text-[10px] text-muted-foreground">{p.unit}</span>
-                <ul className="mt-2 flex flex-col gap-1">
-                  {p.features.map((f) => (
-                    <li key={f} className="flex items-start gap-1 text-[11px]">
-                      <Check className="mt-0.5 size-3 shrink-0 text-success-fg" aria-hidden /> {f}
-                    </li>
-                  ))}
-                </ul>
-              </button>
-            ))}
-          </div>
-        )}
+        {step === 0 && <CompanyStep form={form} check={check} />}
+        {step === 1 && <AdminStep form={form} />}
+        {step === 2 && <DefaultsStep form={form} />}
+        {step === 3 && <PlanStep form={form} />}
 
         <div className="mt-2 flex items-center justify-between gap-2">
           {step > 0 ? (
@@ -287,14 +133,13 @@ export default function RegisterPage() {
             </Button>
           ) : (
             <Button type="submit" loading={busy}>
-              <Rocket /> Create organisation
+              <Send /> Submit sign-up
             </Button>
           )}
         </div>
         {step === STEPS.length - 1 && (
           <p className="text-[11px] text-muted-foreground">
-            {v.plan === "free" ? "No card needed." : v.plan === "pro" ? "14-day free trial, no card needed." : "Our team will reach out within one working day."} By
-            creating an organisation you accept the terms of service and data-processing agreement.
+            We verify every new organisation before provisioning it — you&apos;ll see the status of your request on the next screen.
           </p>
         )}
       </form>

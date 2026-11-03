@@ -1,0 +1,11 @@
+{
+  "$comment": "Read by scripts/check-npm-audit.py. Dev-toolchain advisories with no non-breaking fix only; production dependencies are audited with no allowlist. Every entry names one advisory for one package, a reason and an expiry.",
+  "allow": [
+    {
+      "advisory": "GHSA-g3hv-75wg-m249",
+      "package": "minimatch",
+      "reason": "Dev-only (eslint 9, eslint-config-next 16.4.4 and their plugins). Fixed only in minimatch 11; eslint 10.x still depends on minimatch ^10 and the plugins on ^3, so no non-breaking upgrade exists. Denial of service via glob-pattern amplification needs attacker-supplied patterns; lint only expands our own config globs.",
+      "expires": "2027-02-01"
+    }
+  ]
+}
